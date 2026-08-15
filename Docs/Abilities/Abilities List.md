@@ -1,4 +1,5 @@
-# Q Abilities
+# Burst Abilities
+Focused on Burst Damage and Skill Shots.
 ## Beam
 
 The player charges (short time) a beam that deals damage on contact.
@@ -19,6 +20,7 @@ The missiles target the players mouse position at cast.
 There's a short pause between casts.
 The player can move while the cast, but at a slower speed.
 The travel time/impact speed of each missile increases with distance from the player.
+The player can't cast other abilities while this ability is active.
 
 Medium Range.
 Small (Individual) Damage
@@ -52,7 +54,40 @@ Medium Cooldown
 (Smaller Ashe W or Longer Graves Auto)
 ![[Pasted image 20260815184859.png|276]]
 ![[Pasted image 20260815184934.png|278]]
-# W Abilities
+# Area Abilities
+Focused on AOE Damage, Area Denial and CC
 
+## Molotov
 
-# E Abilities
+The player launches a projectile that creates an a circular area of damage on impact.
+This area damages and slows enemies that remain inside it.
+
+Medium Range.
+Small Damage
+Medium Cooldown
+Medium Size
+Medium Duration
+
+(Morgana W)
+![[Pasted image 20260815190933.png|294]]
+
+## Smoke Bomb
+
+The player launches a projectile that creates an a circular area of damage on impact.
+This area blinds and slows enemies that remain inside it.
+This ability can hold 3 charges
+
+Long Range.
+No Damage
+Medium Cooldown
+Short Duration
+
+(Graves W)
+![[Pasted image 20260815191248.png|256]]
+
+## Bear Trap
+
+The player spawns a trap that will damage and stun enemies that step on it.
+The trap will have a short delay between spawn and activation.
+
+# Extra Abilities
