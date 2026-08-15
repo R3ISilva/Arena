@@ -63,7 +63,7 @@ The player launches a projectile that creates an a circular area of damage on im
 This area damages and slows enemies that remain inside it.
 
 Medium Range.
-Small Damage
+Small Damage (Per Tic)
 Medium Cooldown
 Medium Size
 Medium Duration
@@ -80,6 +80,7 @@ This ability can hold 3 charges
 Long Range.
 No Damage
 Medium Cooldown
+Small Size
 Short Duration
 
 (Graves W)
@@ -88,6 +89,79 @@ Short Duration
 ## Bear Trap
 
 The player spawns a trap that will damage and stun enemies that step on it.
-The trap will have a short delay between spawn and activation.
+The trap will have a short delay between spawn and activation, and will remain where it was placed until it is triggered or it's duration ends.
+At most there can be 2/3 traps in the map.
+
+Medium Range
+Medium Damage
+Medium Cooldown
+Small Size
+Long Life Duration / Medium Stun Duration
+
+(Long Range Caitlyn E)
+![[Pasted image 20260815204318.png|275]]
+## Net
+
+The player shoots a slow moving projectile that damages and stuns enemies directly on contact.
+
+Medium Range
+Small Damage
+Long Cooldown
+Small Size
+Instant Life Duration / Medium Stun Duration
+
+(Morgana Q or Rengar Empowered E)
+![[Pasted image 20260815203851.png|387]]
+![[Pasted image 20260815203819.png|380]]
 
 # Extra Abilities
+
+## Dash
+
+The player quickly dashes a short distance.
+The player is not immune to damage or stuns during the dash, but is not affected by slows.
+This ability can hold 2 charges.
+
+Small Range
+No Damage
+Long Cooldown
+
+(Aatrox E)
+![[Pasted image 20260815205050.png|370]]
+
+## Grappling Hook
+
+The Player shoots a projectile that attaches to a wall or enemy on contact.
+Then the player is pulled towards the impact spot.
+Enemies hit will be stunned until shortly after the player reaches them.
+
+Long Range
+No Damage
+Long Cooldown
+Short Stun Duration
+
+(Nautilus Q)
+![[Pasted image 20260815205554.png|319]]
+
+## Shield
+
+The player is immune to damage/stuns for a very short duration.
+While this ability is active, the player can't move or use abilities.
+
+Self
+No Damage
+Long Cooldown
+
+(Super Fast Zhonya's)
+![[Pasted image 20260815205830.png|442]]
+
+## Burn
+
+The player empowers their next **damaging** ability, making it deal more damage and apply DOT damage for a medium duration.
+
+Self
+Small Damage (Extra and Per Tic)
+Long Cooldown
+
+(Active Lyandry's)
+![[Pasted image 20260815210636.png|186]]
