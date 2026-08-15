@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Basics/Mechanics.md",
+                "file": "Abilities/Abilities List.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Mechanics"
+              "title": "Abilities List"
             }
           }
         ],
@@ -114,7 +114,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "Basics/Mechanics.md",
+                "file": "Abilities/Abilities List.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -133,7 +133,7 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "Basics/Mechanics.md",
+                "file": "Abilities/Abilities List.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
@@ -176,7 +176,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "Basics/Mechanics.md",
+                "file": "Abilities/Abilities List.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -205,8 +205,18 @@
   },
   "active": "c5d8309374fab401",
   "lastOpenFiles": [
-    "Basics/Overview.md",
+    "Pasted image 20260815184934.png",
+    "Pasted image 20260815184932.png",
+    "Pasted image 20260815184922.png",
+    "Pasted image 20260815184859.png",
+    "Pasted image 20260815183922.png",
+    "Pasted image 20260815183843.png",
+    "Pasted image 20260815183250.png",
+    "Pasted image 20260815183230.png",
+    "Pasted image 20260815181921.png",
+    "Pasted image 20260815181825.png",
     "Basics/Mechanics.md",
+    "Basics/Overview.md",
     "Abilities/Abilities List.md",
     "Art",
     "Abilities",
