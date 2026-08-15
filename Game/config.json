@@ -1,0 +1,39 @@
+{
+  "window": {
+    "title": "LÖVE 2D Test",
+    "width": 800,
+    "height": 600
+  },
+  "grid": {
+    "cellSize": 25
+  },
+  "player": {
+    "startX": 100,
+    "startY": 100,
+    "radius": 12,
+    "walkSpeed": 260
+  },
+  "obstacles": [
+    { "x": 250, "y": 150, "width": 100, "height": 250 },
+    { "x": 450, "y": 250, "width": 150, "height": 100 },
+    { "x": 150, "y": 420, "width": 200, "height": 60 },
+    { "x": 550, "y": 80, "width": 120, "height": 120 }
+  ],
+  "clickEffect": {
+    "duration": 0.35,
+    "radius": 35,
+    "arrowCount": 4,
+    "arrowLength": 14,
+    "arrowWidth": 8
+  },
+  "colors": {
+    "background": [0.1, 0.1, 0.12, 1],
+    "grid": [0.2, 0.2, 0.25, 1],
+    "obstacleFill": [0.55, 0.35, 0.2, 1],
+    "obstacleOutline": [0.35, 0.2, 0.1, 1],
+    "path": [1, 1, 1, 0.4],
+    "playerFill": [1.0, 0.2, 0.2, 1],
+    "playerOutline": [1, 1, 1, 0.6],
+    "clickEffect": [0.9, 0.15, 0.2, 1]
+  }
+}
