@@ -154,6 +154,15 @@ function ClientAdapter:pump()
             self.session:onDisconnect("server")
         end
     end
+
+    -- Feed the smoothed RTT (ms -> s) so reconciliation can scale its threshold
+    -- with latency instead of using a fixed pixel distance.
+    if self.serverPeer then
+        local rtt = self.serverPeer:round_trip_time()
+        if rtt then
+            self.session:setLatency(rtt / 1000)
+        end
+    end
 end
 
 function ClientAdapter:flushOutbox()

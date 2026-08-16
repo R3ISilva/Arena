@@ -47,6 +47,7 @@ function Session.new(world, mode, netConfig)
         self.remoteBuffers = {}   -- slot -> array of { time, x, y }
         self.remoteRendered = {}  -- slot -> { x, y }
         self.lastSeq = nil
+        self.latency = 0          -- smoothed RTT in seconds, fed by the adapter
     else
         error("unknown session mode: " .. tostring(mode))
     end
@@ -204,13 +205,15 @@ end
 -- Snap the predicted position to the authoritative one when they diverge, then
 -- re-path toward the current target so movement continues seamlessly. A dropped
 -- move intent is healed by re-sending it (move intents ride the unreliable channel).
--- The threshold tolerates normal latency-induced lag (prediction ahead of authority)
--- while still catching real drift from lost intents.
+-- The threshold scales with RTT: normal prediction leads the authority by roughly
+-- walkSpeed x latency, so the tolerance is walkSpeed x latency x 2, with a
+-- walkSpeed x 0.1 floor that still catches real drift (lost intents) at low latency.
 function Session:reconcile(authX, authY)
     local localPlayer = self.localPlayer
     local dx = localPlayer.x - authX
     local dy = localPlayer.y - authY
-    local threshold = math.max(4, self.world.walkSpeed * 0.25)
+    local walkSpeed = self.world.walkSpeed
+    local threshold = math.max(walkSpeed * 0.1, walkSpeed * (self.latency or 0) * 2)
 
     if dx * dx + dy * dy <= threshold * threshold then
         return
@@ -223,6 +226,13 @@ function Session:reconcile(authX, authY)
     else
         localPlayer.path = {}
     end
+end
+
+-- Feed the smoothed round-trip time (seconds) from the transport layer. Used only
+-- by the client to size the reconciliation threshold so normal prediction lag is
+-- tolerated while real drift from lost move intents is still corrected.
+function Session:setLatency(seconds)
+    self.latency = seconds or 0
 end
 
 ----------------------------------------

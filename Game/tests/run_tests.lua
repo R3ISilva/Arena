@@ -186,6 +186,43 @@ test("movement is deterministic across two identical sessions", function()
     assertEqual(y1, y2, "deterministic y coordinate")
 end)
 
+test("player walks a long multi-waypoint path without getting stuck", function()
+    -- Regression: with walkSpeed 260 the per-tick step (8.67 px) is larger than the
+    -- old 4 px arrival radius, so the follower used to overshoot a waypoint and
+    -- oscillate around it forever. The real obstacle layout + long path triggers it.
+    local config = makeConfig()
+    config.window = { title = "test", width = 800, height = 600 }
+    config.grid.cellSize = 25
+    config.player.walkSpeed = 260
+    config.player.spawnPoints = { { x = 100, y = 100 }, { x = 700, y = 500 } }
+    config.obstacles = {
+        { x = 250, y = 150, width = 100, height = 250 },
+        { x = 450, y = 250, width = 150, height = 100 },
+        { x = 150, y = 420, width = 200, height = 60 },
+        { x = 550, y = 80, width = 120, height = 120 },
+    }
+
+    local world = World.new(config)
+    local session = Session.new(world, "server", config.server)
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "moveIntent", x = 740, y = 540 })
+
+    for _ = 1, 300 do
+        session:tick(1 / 30)
+    end
+
+    local player = session:getState().players.player1
+    local goalCol, goalRow = world:worldToCell(740, 540)
+    local goalX, goalY = world:cellCenter(goalCol, goalRow)
+    local dx = player.x - goalX
+    local dy = player.y - goalY
+    assertTrue(dx * dx + dy * dy <= 1,
+        string.format("player stuck before goal: (%.1f, %.1f) vs goal (%.1f, %.1f)",
+            player.x, player.y, goalX, goalY))
+end)
+
 ----------------------------------------
 -- Server: snapshot emission
 ----------------------------------------
@@ -365,6 +402,30 @@ test("client re-sends a lost move intent after reconciliation", function()
         end
     end
     assertTrue(found, "expected a re-sent move intent after reconciliation")
+end)
+
+test("reconcile threshold scales with RTT", function()
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", { type = "welcome", slot = "player1" })
+
+    -- At 200 ms RTT the threshold is ~40 px, so a 30 px divergence is tolerated.
+    session:setLatency(0.2)
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 1,
+        players = { { slot = "player1", x = 55, y = 25 } },
+    })
+    assertEqual(session:getState().players.player1.x, 25, "prediction lag within RTT margin must not snap")
+
+    -- The same 30 px divergence exceeds the ~10 px floor once latency is zero.
+    session:setLatency(0)
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 2,
+        players = { { slot = "player1", x = 55, y = 25 } },
+    })
+    assertEqual(session:getState().players.player1.x, 55, "real drift at low latency must snap")
 end)
 
 test("client interpolates the remote player", function()

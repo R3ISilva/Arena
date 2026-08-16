@@ -3,6 +3,7 @@
 --   --server  dedicated server (headless when GAME_SERVER=1)
 --   --test    headless test harness (prints results, exits non-zero on failure)
 --   --probe   headless client connectivity probe (prints slot + exits)
+--   --twoclient headless two-client reconciliation diagnostic (prints RTT/divergence/snaps + exits)
 
 local json = require("json")
 
@@ -28,6 +29,9 @@ function love.load(args)
     elseif hasArg(args, "--probe") then
         local runProbe = require("tests.probe")
         os.exit(runProbe() and 0 or 1)
+    elseif hasArg(args, "--twoclient") then
+        local runTwoClient = require("tests.twoclient")
+        os.exit(runTwoClient() and 0 or 1)
     end
 
     local config = loadConfig()

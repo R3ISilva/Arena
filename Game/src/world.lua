@@ -153,22 +153,26 @@ end
 -- Fixed-step movement along a path
 ----------------------------------------
 function World:stepPlayer(player, dt)
-    if #player.path == 0 then
-        return
+    local remaining = self.walkSpeed * dt
+    while remaining > 0 and #player.path > 0 do
+        local next = player.path[1]
+        local dx = next.x - player.x
+        local dy = next.y - player.y
+        local distance = math.sqrt(dx * dx + dy * dy)
+
+        if distance <= remaining then
+            -- Arrive exactly at this waypoint (never overshoot) and carry the
+            -- leftover movement into the next leg of the path.
+            player.x = next.x
+            player.y = next.y
+            table.remove(player.path, 1)
+            remaining = remaining - distance
+        else
+            player.x = player.x + (dx / distance) * remaining
+            player.y = player.y + (dy / distance) * remaining
+            remaining = 0
+        end
     end
-
-    local next = player.path[1]
-    local dx = next.x - player.x
-    local dy = next.y - player.y
-    local distance = math.sqrt(dx * dx + dy * dy)
-
-    if distance < 4 then
-        table.remove(player.path, 1)
-        return
-    end
-
-    player.x = player.x + (dx / distance) * self.walkSpeed * dt
-    player.y = player.y + (dy / distance) * self.walkSpeed * dt
 end
 
 return World

@@ -14,12 +14,27 @@ local function run()
     local session = Session.new(World.new(config), "client", config.server)
     local adapter = net.newClient(config, session)
 
-    local dt = 1 / config.server.tickRate
-    local deadline = love.timer.getTime() + 4
+    local fixedDt = 1 / config.server.tickRate
+    local accumulator = 0
+    local lastTime = love.timer.getTime()
+    local deadline = lastTime + 4
 
     while love.timer.getTime() < deadline do
         adapter:pump()
-        session:tick(dt)
+
+        local now = love.timer.getTime()
+        local frameDt = now - lastTime
+        lastTime = now
+        if frameDt > 0.25 then
+            frameDt = 0.25 -- clamp so a stall doesn't spiral the accumulator
+        end
+
+        accumulator = accumulator + frameDt
+        while accumulator >= fixedDt do
+            session:tick(fixedDt)
+            accumulator = accumulator - fixedDt
+        end
+
         adapter:flushOutbox()
         love.timer.sleep(0.001)
     end
@@ -28,6 +43,7 @@ local function run()
     print("connected: " .. tostring(state.connected))
     print("slot:      " .. tostring(state.slot))
     print("lastSeq:   " .. tostring(state.lastSeq))
+    print(string.format("latency:   %.1f ms", (session.latency or 0) * 1000))
     for slot, player in pairs(state.players) do
         print(string.format("player %s -> (%.1f, %.1f)", slot, player.x, player.y))
     end
