@@ -175,4 +175,79 @@ end
 
 json.null = {}
 
+local function encodeString(value)
+    return '"' .. value:gsub('[%z\1-\31\\"]', function(char)
+        local simple = {
+            ['"'] = '\\"', ["\\"] = "\\\\", ["\n"] = "\\n",
+            ["\r"] = "\\r", ["\t"] = "\\t", ["\b"] = "\\b", ["\f"] = "\\f",
+        }
+        if simple[char] then
+            return simple[char]
+        end
+        return string.format("\\u%04x", string.byte(char))
+    end) .. '"'
+end
+
+local function isArray(value)
+    local count = 0
+    for key in pairs(value) do
+        if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then
+            return false
+        end
+        count = count + 1
+    end
+    for i = 1, count do
+        if value[i] == nil then
+            return false
+        end
+    end
+    return true
+end
+
+local encodeValue -- forward declaration (mutual recursion with encodeObject/encodeArray)
+
+local function encodeObject(value)
+    local parts = {}
+    for key, item in pairs(value) do
+        if type(key) == "string" then
+            parts[#parts + 1] = encodeString(key) .. ":" .. encodeValue(item)
+        end
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+local function encodeArray(value)
+    local parts = {}
+    for i = 1, #value do
+        parts[#parts + 1] = encodeValue(value[i])
+    end
+    return "[" .. table.concat(parts, ",") .. "]"
+end
+
+encodeValue = function(value)
+    local valueType = type(value)
+    if value == nil then
+        return "null"
+    elseif valueType == "number" then
+        if value ~= value or value == math.huge or value == -math.huge then
+            return "null"
+        end
+        return tostring(value)
+    elseif valueType == "boolean" then
+        return value and "true" or "false"
+    elseif valueType == "string" then
+        return encodeString(value)
+    elseif valueType == "table" then
+        if isArray(value) then
+            return encodeArray(value)
+        end
+        return encodeObject(value)
+    end
+    error("json.lua: cannot encode value of type " .. valueType)
+end
+
+function json.encode(value)
+    return encodeValue(value)
+end
+
 return json
