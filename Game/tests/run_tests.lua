@@ -224,6 +224,34 @@ test("player walks a long multi-waypoint path without getting stuck", function()
 end)
 
 ----------------------------------------
+-- World: diagonal pathfinding
+----------------------------------------
+test("pathfinding takes diagonal shortcuts in open space", function()
+    local config = makeConfig()
+    config.obstacles = {}
+    local world = World.new(config)
+
+    local startX, startY = world:cellCenter(1, 1)
+    local goalX, goalY = world:cellCenter(2, 2)
+    local path = world:findPath(startX, startY, goalX, goalY)
+
+    assertEqual(#path, 2, "diagonal neighbors should connect with a single step")
+end)
+
+test("pathfinding does not cut corners through obstacles", function()
+    local config = makeConfig()
+    -- Blocks cell (2,1): the diagonal from (1,1) to (2,2) must be refused.
+    config.obstacles = { { x = 50, y = 25, width = 25, height = 25 } }
+    local world = World.new(config)
+
+    local startX, startY = world:cellCenter(1, 1)
+    local goalX, goalY = world:cellCenter(2, 2)
+    local path = world:findPath(startX, startY, goalX, goalY)
+
+    assertEqual(#path, 3, "a blocked adjacent cell must forbid the diagonal corner-cut")
+end)
+
+----------------------------------------
 -- Server: snapshot emission
 ----------------------------------------
 test("snapshots broadcast authoritative positions on the unreliable channel", function()

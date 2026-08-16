@@ -5,6 +5,8 @@
 local World = {}
 World.__index = World
 
+local DIAGONAL_COST = math.sqrt(2)
+
 function World.new(config)
     local self = setmetatable({}, World)
     self.cellSize = config.grid.cellSize
@@ -64,17 +66,38 @@ end
 ----------------------------------------
 -- Deterministic A* pathfinding
 ----------------------------------------
+-- Eight-directional neighbors. Orthogonal steps cost 1, diagonal steps cost
+-- sqrt(2) so straight lines are preferred while diagonals remain available.
 function World:neighboringCells(col, row)
     return {
-        { col + 1, row },
-        { col - 1, row },
-        { col, row + 1 },
-        { col, row - 1 },
+        { col + 1, row, 1 },
+        { col - 1, row, 1 },
+        { col, row + 1, 1 },
+        { col, row - 1, 1 },
+        { col + 1, row + 1, DIAGONAL_COST },
+        { col + 1, row - 1, DIAGONAL_COST },
+        { col - 1, row + 1, DIAGONAL_COST },
+        { col - 1, row - 1, DIAGONAL_COST },
     }
 end
 
-function World:manhattanDistance(col, row, goalCol, goalRow)
-    return math.abs(col - goalCol) + math.abs(row - goalRow)
+-- Octile distance: the exact shortest path cost on an open 8-connected grid.
+-- Admissible and consistent with the orthogonal/diagonal step costs above.
+function World:octileDistance(col, row, goalCol, goalRow)
+    local dx = math.abs(col - goalCol)
+    local dy = math.abs(row - goalRow)
+    return (dx + dy) + (DIAGONAL_COST - 2) * math.min(dx, dy)
+end
+
+-- A diagonal step must not cut through a blocked corner: both adjacent
+-- orthogonal cells have to be walkable.
+function World:diagonalIsWalkable(col, row, nextCol, nextRow)
+    local dCol = nextCol - col
+    local dRow = nextRow - row
+    if dCol == 0 or dRow == 0 then
+        return true
+    end
+    return self:cellIsWalkable(col + dCol, row) and self:cellIsWalkable(col, row + dRow)
 end
 
 function World:reconstructPath(cameFrom, startIndex, goalIndex)
@@ -107,7 +130,7 @@ function World:findPath(startX, startY, goalX, goalY)
     local costSoFar = { [startIndex] = 0 }
 
     local function estimatedCost(col, row)
-        return costSoFar[self:gridIndex(col, row)] + self:manhattanDistance(col, row, goalCol, goalRow)
+        return costSoFar[self:gridIndex(col, row)] + self:octileDistance(col, row, goalCol, goalRow)
     end
 
     while #open > 0 do
@@ -119,10 +142,10 @@ function World:findPath(startX, startY, goalX, goalY)
         end
 
         for _, neighbor in ipairs(self:neighboringCells(current.col, current.row)) do
-            local nextCol, nextRow = neighbor[1], neighbor[2]
-            if self:cellIsWalkable(nextCol, nextRow) then
+            local nextCol, nextRow, stepCost = neighbor[1], neighbor[2], neighbor[3]
+            if self:cellIsWalkable(nextCol, nextRow) and self:diagonalIsWalkable(current.col, current.row, nextCol, nextRow) then
                 local nextIndex = self:gridIndex(nextCol, nextRow)
-                local tentativeCost = costSoFar[current.index] + 1
+                local tentativeCost = costSoFar[current.index] + stepCost
                 if tentativeCost < (costSoFar[nextIndex] or math.huge) then
                     cameFrom[nextIndex] = current.index
                     costSoFar[nextIndex] = tentativeCost
