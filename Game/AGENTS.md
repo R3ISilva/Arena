@@ -4,9 +4,16 @@
 
 > **Run vs. play:** `love .` / `lovec .` alone will **run/render** the client, but the
 > game is only *playable* (you get a slot, can move, see others) when the dedicated
-> server is up. To **play**, first read the **arena-server** skill
-> (`Game/.pi/skills/arena-server/SKILL.md`) and bring the server up with its
-> bundled scripts before launching the client.
+> server is up.
+>
+> **To test the game with one client**, just run `run-game.ps1` (in the repo root) —
+> it checks Docker, brings the server up via the **arena-server** skill's bundled
+> scripts if needed, and launches a windowed client that is playable immediately:
+> ```powershell
+> pwsh -File run-game.ps1        # or: powershell -ExecutionPolicy Bypass -File run-game.ps1
+> ```
+> Add `-SkipServer` to only launch the client (assumes the server is already up).
+> For manual server control, read `Game/.pi/skills/arena-server/SKILL.md`.
 
 LÖVE ships two executables at `C:/Program Files/LOVE/`:
 
