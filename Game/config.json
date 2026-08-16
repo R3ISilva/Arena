@@ -8,10 +8,12 @@
     "cellSize": 25
   },
   "player": {
-    "startX": 100,
-    "startY": 100,
     "radius": 12,
-    "walkSpeed": 260
+    "walkSpeed": 260,
+    "spawnPoints": [
+      { "x": 100, "y": 100 },
+      { "x": 700, "y": 500 }
+    ]
   },
   "obstacles": [
     { "x": 250, "y": 150, "width": 100, "height": 250 },
@@ -26,14 +28,23 @@
     "arrowLength": 14,
     "arrowWidth": 8
   },
+  "server": {
+    "address": "127.0.0.1",
+    "port": 27890,
+    "tickRate": 30,
+    "snapshotRate": 30,
+    "spectatorLimit": 32
+  },
   "colors": {
     "background": [0.1, 0.1, 0.12, 1],
     "grid": [0.2, 0.2, 0.25, 1],
     "obstacleFill": [0.55, 0.35, 0.2, 1],
     "obstacleOutline": [0.35, 0.2, 0.1, 1],
     "path": [1, 1, 1, 0.4],
-    "playerFill": [1.0, 0.2, 0.2, 1],
-    "playerOutline": [1, 1, 1, 0.6],
+    "player1Fill": [1.0, 0.2, 0.2, 1],
+    "player1Outline": [1, 1, 1, 0.6],
+    "player2Fill": [0.2, 0.4, 1.0, 1],
+    "player2Outline": [1, 1, 1, 0.6],
     "clickEffect": [0.9, 0.15, 0.2, 1]
   }
 }
