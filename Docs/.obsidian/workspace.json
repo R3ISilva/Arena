@@ -27,12 +27,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Abilities/Abilities List.md",
+                "file": "Combat/Possible Builds.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Abilities List"
+              "title": "Possible Builds"
             }
           }
         ],
@@ -203,10 +203,8 @@
   },
   "active": "c5d8309374fab401",
   "lastOpenFiles": [
-    "Basics/Mechanics.md",
-    "Basics/Overview.md",
-    "Abilities/Abilities List.md",
-    "Pasted image 20260815181825.png",
+    "Combat/Abilities List.md",
+    "Combat/Possible Builds.md",
     "Pasted image 20260815210636.png",
     "Pasted image 20260815210544.png",
     "Pasted image 20260815205830.png",
@@ -216,8 +214,11 @@
     "Pasted image 20260815204318.png",
     "Pasted image 20260815203851.png",
     "Pasted image 20260815203819.png",
+    "Basics/Mechanics.md",
+    "Basics/Overview.md",
+    "Pasted image 20260815191248.png",
     "Art",
-    "Abilities",
+    "Combat",
     "Bem-vindo.md",
     "Basics"
   ]
