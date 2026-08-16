@@ -2,6 +2,12 @@
 
 ## Running & testing the game
 
+> **Run vs. play:** `love .` / `lovec .` alone will **run/render** the client, but the
+> game is only *playable* (you get a slot, can move, see others) when the dedicated
+> server is up. To **play**, first read the **arena-server** skill
+> (`Game/.pi/skills/arena-server/SKILL.md`) and bring the server up with its
+> bundled scripts before launching the client.
+
 LÖVE ships two executables at `C:/Program Files/LOVE/`:
 
 | Binary | Use case |
