@@ -56,12 +56,10 @@
               "type": "file-explorer",
               "state": {
                 "sortOrder": "alphabetical",
-                "autoReveal": false,
-                "showSearch": false,
-                "searchQuery": ""
+                "autoReveal": false
               },
               "icon": "lucide-folder-closed",
-              "title": "Explorador de ficheiros"
+              "title": "Files"
             }
           },
           {
@@ -194,17 +192,21 @@
   },
   "left-ribbon": {
     "hiddenItems": {
-      "switcher:Abrir Quick Switcher": false,
-      "graph:Abrir Visualização de diagrama de grafo": false,
-      "canvas:Criar novo Canvas": false,
-      "daily-notes:Abrir nota de hoje": false,
-      "templates:Inserir templates": false,
-      "command-palette:Abrir paleta de comando": false,
-      "bases:Criar nova base": false
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
     }
   },
   "active": "c5d8309374fab401",
   "lastOpenFiles": [
+    "Basics/Mechanics.md",
+    "Basics/Overview.md",
+    "Abilities/Abilities List.md",
+    "Pasted image 20260815181825.png",
     "Pasted image 20260815210636.png",
     "Pasted image 20260815210544.png",
     "Pasted image 20260815205830.png",
@@ -214,11 +216,6 @@
     "Pasted image 20260815204318.png",
     "Pasted image 20260815203851.png",
     "Pasted image 20260815203819.png",
-    "Basics/Mechanics.md",
-    "Basics/Overview.md",
-    "Abilities/Abilities List.md",
-    "Pasted image 20260815191248.png",
-    "Pasted image 20260815190933.png",
     "Art",
     "Abilities",
     "Bem-vindo.md",

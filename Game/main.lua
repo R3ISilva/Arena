@@ -23,6 +23,12 @@ local function hasArg(args, name)
 end
 
 function love.load(args)
+    if hasArg(args, "--twoclientwin:child") then
+        -- One windowed, auto-driving client. The tests/two-client-with-head-test/
+        -- twoclientwin.sh launcher starts two of these and asserts the aggregate.
+        require("tests.two-client-with-head-test.twoclientclient")(args)
+        return
+    end
     if hasArg(args, "--test") then
         local runTests = require("tests.run_tests")
         os.exit(runTests() and 0 or 1)
@@ -32,6 +38,11 @@ function love.load(args)
     elseif hasArg(args, "--twoclient") then
         local runTwoClient = require("tests.twoclient")
         os.exit(runTwoClient() and 0 or 1)
+    elseif hasArg(args, "--twoclientwin") then
+        -- The two-window diagnostic is orchestrated from the shell (it needs two
+        -- GUI love.exe processes). The child mode is --twoclientwin:child.
+        print("Run the two-window diagnostic via tests/two-client-with-head-test/twoclientwin.sh")
+        os.exit(2)
     end
 
     local config = loadConfig()
