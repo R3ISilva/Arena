@@ -3,7 +3,7 @@
 -- Run via: lovec.exe . --probe
 
 local json = require("json")
-local World = require("src.world")
+local Game = require("src.game")
 local Session = require("src.session")
 local net = require("src.net")
 
@@ -11,7 +11,7 @@ local function run()
     local text = love.filesystem.read("config.json")
     local config = json.decode(text)
 
-    local session = Session.new(World.new(config), "client", config.server)
+    local session = Session.new(Game.new(config), "client", config.server)
     local adapter = net.newClient(config, session)
 
     local fixedDt = 1 / config.server.tickRate

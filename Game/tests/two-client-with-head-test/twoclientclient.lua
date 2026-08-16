@@ -14,7 +14,7 @@
 -- Run via main.lua flag:  --twoclientwin:child <1|2> --out <abs_dir>
 
 local json = require("json")
-local World = require("src.world")
+local Game = require("src.game")
 local Session = require("src.session")
 local net = require("src.net")
 
@@ -78,8 +78,8 @@ return function(args)
 
     local text = love.filesystem.read("config.json")
     local config = json.decode(text)
-    local world = World.new(config)
-    local session = Session.new(world, "client", config.server)
+    local game = Game.new(config)
+    local session = Session.new(game, "client", config.server)
     local adapter = net.newClient(config, session)
 
     local WINDOW_WIDTH = config.window.width

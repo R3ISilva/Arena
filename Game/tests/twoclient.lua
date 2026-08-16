@@ -5,12 +5,12 @@
 -- Run via: lovec.exe . --twoclient   (exit code 0 = healthy, 1 = snapping detected)
 
 local json = require("json")
-local World = require("src.world")
+local Game = require("src.game")
 local Session = require("src.session")
 local net = require("src.net")
 
 local function makeClient(config)
-    local session = Session.new(World.new(config), "client", config.server)
+    local session = Session.new(Game.new(config), "client", config.server)
     local adapter = net.newClient(config, session)
     return session, adapter
 end

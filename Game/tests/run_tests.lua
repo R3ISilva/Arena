@@ -2,6 +2,7 @@
 -- Run via: lovec.exe . --test   (exit code 0 = pass, 1 = fail)
 
 local World = require("src.world")
+local Game = require("src.game")
 local Session = require("src.session")
 
 local tests = {}
@@ -57,11 +58,11 @@ local function makeConfig()
 end
 
 local function newServerSession(config)
-    return Session.new(World.new(config or makeConfig()), "server", (config or makeConfig()).server)
+    return Session.new(Game.new(config or makeConfig()), "server", (config or makeConfig()).server)
 end
 
 local function newClientSession(config)
-    return Session.new(World.new(config or makeConfig()), "client", (config or makeConfig()).server)
+    return Session.new(Game.new(config or makeConfig()), "client", (config or makeConfig()).server)
 end
 
 ----------------------------------------
@@ -118,8 +119,9 @@ end)
 ----------------------------------------
 test("move intent advances the authoritative player along a deterministic path", function()
     local config = makeConfig()
-    local world = World.new(config)
-    local session = Session.new(world, "server", config.server)
+    local game = Game.new(config)
+    local world = game.world
+    local session = Session.new(game, "server", config.server)
     session:onConnect(1)
     session:drainOutbox()
 
@@ -202,8 +204,9 @@ test("player walks a long multi-waypoint path without getting stuck", function()
         { x = 550, y = 80, width = 120, height = 120 },
     }
 
-    local world = World.new(config)
-    local session = Session.new(world, "server", config.server)
+    local game = Game.new(config)
+    local world = game.world
+    local session = Session.new(game, "server", config.server)
     session:onConnect(1)
     session:drainOutbox()
 
@@ -249,6 +252,64 @@ test("pathfinding does not cut corners through obstacles", function()
     local path = world:findPath(startX, startY, goalX, goalY)
 
     assertEqual(#path, 3, "a blocked adjacent cell must forbid the diagonal corner-cut")
+end)
+
+----------------------------------------
+-- Game: pure simulation (no network)
+----------------------------------------
+test("game spawns players at slot-specific spawn points", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+
+    local p1 = game:getPlayer("player1")
+    local p2 = game:getPlayer("player2")
+    assertEqual(p1.x, 25)
+    assertEqual(p1.y, 25)
+    assertEqual(p2.x, 175)
+    assertEqual(p2.y, 175)
+end)
+
+test("game setTarget clamps coordinates to the arena", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local cx, cy = game:setTarget("player1", -500, 9999)
+    assertEqual(cx, 0)
+    assertEqual(cy, 200)
+
+    local target = game:getTarget("player1")
+    assertEqual(target.x, 0)
+    assertEqual(target.y, 200)
+end)
+
+test("game setTarget computes a path and tick advances the player", function()
+    local config = makeConfig()
+    config.obstacles = {}
+    local game = Game.new(config)
+    game:spawnPlayer("player1")
+
+    game:setTarget("player1", 175, 175)
+    local startX = game:getPlayer("player1").x
+
+    for _ = 1, 30 do
+        game:tick(1 / 30)
+    end
+
+    local player = game:getPlayer("player1")
+    assertTrue(player.x ~= startX, "player should move toward the target")
+end)
+
+test("game removePlayer stops it appearing in state", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+
+    game:removePlayer("player1")
+
+    local players = game:getPlayers()
+    assertEqual(players.player1, nil)
+    assertTrue(players.player2 ~= nil)
 end)
 
 ----------------------------------------

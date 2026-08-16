@@ -3,6 +3,10 @@
 -- messages, and fixed timestep ticks, and produces authoritative state plus a
 -- queue of outbound messages.
 --
+-- The simulation itself lives in src/game.lua (pure, network-agnostic). The
+-- session delegates all player state, movement, pathfinding, and ticking to a
+-- Game instance and only translates network I/O to/from game commands.
+--
 -- Two modes:
 --   * "server"  — authoritative simulation for all connected peers.
 --   * "client"  — client-side prediction for the local player, interpolation for
@@ -22,9 +26,9 @@ Session.__index = Session
 local SLOTS = { "player1", "player2" }
 local INTERPOLATION_DELAY = 0.1 -- render remote players ~100ms behind the newest snapshot
 
-function Session.new(world, mode, netConfig)
+function Session.new(game, mode, netConfig)
     local self = setmetatable({}, Session)
-    self.world = world
+    self.game = game
     self.mode = mode
     self.netConfig = netConfig
     self.outbox = {}
@@ -32,7 +36,6 @@ function Session.new(world, mode, netConfig)
     if mode == "server" then
         self.slots = { player1 = nil, player2 = nil }
         self.peers = {}       -- peerId -> { slot = "player1" | "player2" | "spectator" }
-        self.players = {}     -- slot -> { x, y, path } (authoritative)
         self.spectatorCount = 0
         self.seq = 0
         self.tickCount = 0
@@ -43,7 +46,6 @@ function Session.new(world, mode, netConfig)
         self.slot = nil
         self.time = 0
         self.localPlayer = nil
-        self.localTarget = nil
         self.remoteBuffers = {}   -- slot -> array of { time, x, y }
         self.remoteRendered = {}  -- slot -> { x, y }
         self.lastSeq = nil
@@ -74,9 +76,7 @@ function Session:onConnect(peerId)
         if slot then
             self.slots[slot] = peerId
             self.peers[peerId] = { slot = slot }
-            local spawnIndex = (slot == "player1") and 1 or 2
-            local spawn = self.world.spawnPoints[spawnIndex]
-            self.players[slot] = { x = spawn.x, y = spawn.y, path = {} }
+            self.game:spawnPlayer(slot)
             self:enqueue(peerId, 0, { type = "welcome", slot = slot })
             return true
         end
@@ -106,7 +106,7 @@ function Session:onDisconnect(peerId)
             self.spectatorCount = math.max(0, self.spectatorCount - 1)
         else
             self.slots[entry.slot] = nil
-            self.players[entry.slot] = nil
+            self.game:removePlayer(entry.slot)
         end
         return
     end
@@ -114,7 +114,6 @@ function Session:onDisconnect(peerId)
     self.connected = false
     self.slot = nil
     self.localPlayer = nil
-    self.localTarget = nil
     self.remoteBuffers = {}
     self.remoteRendered = {}
 end
@@ -136,11 +135,8 @@ function Session:onMessage(peerId, message)
             if type(x) ~= "number" or type(y) ~= "number" then
                 return
             end
-            x = math.max(0, math.min(self.world.windowWidth, x))
-            y = math.max(0, math.min(self.world.windowHeight, y))
-
-            local player = self.players[entry.slot]
-            player.path = self.world:findPath(player.x, player.y, x, y)
+            -- setTarget clamps to the arena and computes the authoritative path.
+            self.game:setTarget(entry.slot, x, y)
         end
         return
     end
@@ -148,13 +144,10 @@ function Session:onMessage(peerId, message)
     if message.type == "welcome" then
         self.slot = message.slot
         if message.slot == "player1" or message.slot == "player2" then
-            local spawnIndex = (message.slot == "player1") and 1 or 2
-            local spawn = self.world.spawnPoints[spawnIndex]
-            self.localPlayer = { x = spawn.x, y = spawn.y, path = {} }
-            self.localTarget = nil
+            self.game:spawnPlayer(message.slot)
+            self.localPlayer = self.game:getPlayerRef(message.slot)
         else
             self.localPlayer = nil
-            self.localTarget = nil
         end
     elseif message.type == "snapshot" then
         self:applySnapshot(message)
@@ -173,12 +166,8 @@ function Session:localMoveIntent(x, y)
         return
     end
 
-    x = math.max(0, math.min(self.world.windowWidth, x))
-    y = math.max(0, math.min(self.world.windowHeight, y))
-
-    self.localTarget = { x = x, y = y }
-    self.localPlayer.path = self.world:findPath(self.localPlayer.x, self.localPlayer.y, x, y)
-    self:enqueue("server", 1, { type = "moveIntent", x = x, y = y })
+    local cx, cy = self.game:setTarget(self.slot, x, y)
+    self:enqueue("server", 1, { type = "moveIntent", x = cx, y = cy })
 end
 
 function Session:applySnapshot(message)
@@ -212,19 +201,20 @@ function Session:reconcile(authX, authY)
     local localPlayer = self.localPlayer
     local dx = localPlayer.x - authX
     local dy = localPlayer.y - authY
-    local walkSpeed = self.world.walkSpeed
+    local walkSpeed = self.game.walkSpeed
     local threshold = math.max(walkSpeed * 0.1, walkSpeed * (self.latency or 0) * 2)
 
     if dx * dx + dy * dy <= threshold * threshold then
         return
     end
 
-    localPlayer.x, localPlayer.y = authX, authY
-    if self.localTarget then
-        localPlayer.path = self.world:findPath(localPlayer.x, localPlayer.y, self.localTarget.x, self.localTarget.y)
-        self:enqueue("server", 1, { type = "moveIntent", x = self.localTarget.x, y = self.localTarget.y })
+    self.game:setPosition(self.slot, authX, authY)
+    local target = self.game:getTarget(self.slot)
+    if target then
+        self.game:setTarget(self.slot, target.x, target.y)
+        self:enqueue("server", 1, { type = "moveIntent", x = target.x, y = target.y })
     else
-        localPlayer.path = {}
+        self.game:clearTarget(self.slot)
     end
 end
 
@@ -240,9 +230,7 @@ end
 ----------------------------------------
 function Session:tick(dt)
     if self.mode == "server" then
-        for _, player in pairs(self.players) do
-            self.world:stepPlayer(player, dt)
-        end
+        self.game:tick(dt)
 
         self.tickCount = self.tickCount + 1
         if self.tickCount % self.snapshotEvery == 0 then
@@ -253,7 +241,7 @@ function Session:tick(dt)
 
     self.time = self.time + dt
     if self.localPlayer then
-        self.world:stepPlayer(self.localPlayer, dt)
+        self.game:tick(dt)
     end
     self:updateInterpolation()
 end
@@ -261,9 +249,9 @@ end
 function Session:emitSnapshot()
     local players = {}
     for _, slot in ipairs(SLOTS) do
-        local player = self.players[slot]
-        if player then
-            table.insert(players, { slot = slot, x = player.x, y = player.y })
+        local position = self.game:getPlayer(slot)
+        if position then
+            table.insert(players, { slot = slot, x = position.x, y = position.y })
         end
     end
 
@@ -315,20 +303,14 @@ end
 -- State accessors
 ----------------------------------------
 function Session:getState()
-    local players = {}
     if self.mode == "server" then
-        for _, slot in ipairs(SLOTS) do
-            local player = self.players[slot]
-            if player then
-                players[slot] = { x = player.x, y = player.y }
-            end
-        end
-        return { mode = "server", players = players, seq = self.seq }
+        return { mode = "server", players = self.game:getPlayers(), seq = self.seq }
     end
 
+    local players = {}
     for _, slot in ipairs(SLOTS) do
         if slot == self.slot and self.localPlayer then
-            players[slot] = { x = self.localPlayer.x, y = self.localPlayer.y }
+            players[slot] = self.game:getPlayer(slot)
         elseif self.remoteRendered[slot] then
             players[slot] = self.remoteRendered[slot]
         end

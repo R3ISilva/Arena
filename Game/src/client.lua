@@ -2,7 +2,7 @@
 -- own player, interpolates the remote player, and renders the shared arena.
 -- Click effects and path previews are local-only.
 
-local World = require("src.world")
+local Game = require("src.game")
 local Session = require("src.session")
 local net = require("src.net")
 
@@ -13,8 +13,8 @@ local function applyColor(color, alpha)
 end
 
 function client.run(config)
-    local world = World.new(config)
-    local session = Session.new(world, "client", config.server)
+    local game = Game.new(config)
+    local session = Session.new(game, "client", config.server)
     local adapter = net.newClient(config, session)
 
     local WINDOW_TITLE = config.window.title

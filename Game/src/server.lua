@@ -2,7 +2,7 @@
 -- timestep and pumps ENet events every frame. Headless when GAME_SERVER=1
 -- (graphics/window modules disabled via conf.lua).
 
-local World = require("src.world")
+local Game = require("src.game")
 local Session = require("src.session")
 local net = require("src.net")
 
@@ -14,8 +14,8 @@ function server.run(config)
     io.stdout:setvbuf("line")
     io.stderr:setvbuf("line")
 
-    local world = World.new(config)
-    local session = Session.new(world, "server", config.server)
+    local game = Game.new(config)
+    local session = Session.new(game, "server", config.server)
     local adapter = net.newServer(config, session)
 
     local fixedDt = 1 / config.server.tickRate
