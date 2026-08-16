@@ -1,0 +1,9 @@
+# Obsidian workspace settings (user-specific UI state, changes constantly)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+
+# Obsidian cache
+.obsidian/cache/
+
+# Trash
+.trash/
