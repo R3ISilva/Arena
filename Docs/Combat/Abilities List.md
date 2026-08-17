@@ -100,7 +100,7 @@ Long Life Duration / Medium Stun Duration
 
 (Long Range Caitlyn E)
 ![[Pasted image 20260815204318.png|275]]
-## Net
+## Freeze
 
 The player shoots a slow moving projectile that damages and stuns enemies directly on contact.
 
