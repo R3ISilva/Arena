@@ -9,7 +9,8 @@
 #   * both clients connect as live players and receive snapshots
 #   * both players actually move
 #   * zero reconciliation snaps (no rubber-banding)
-#   * both place pools and take pool damage
+#   * both cast pools/beams and place traps, and take pool damage
+#   * both observe stuns
 #   * at least one player's health reaches 0 within the test window
 #
 # Unlike --twoclient (headless lovec.exe), each client is a real windowed process,
@@ -103,10 +104,20 @@ snaps1=$(read_kv "$OUT_DIR/client1.txt" snaps)
 snaps2=$(read_kv "$OUT_DIR/client2.txt" snaps)
 samples1=$(read_kv "$OUT_DIR/client1.txt" samples)
 samples2=$(read_kv "$OUT_DIR/client2.txt" samples)
-casts1=$(read_kv "$OUT_DIR/client1.txt" casts)
-casts2=$(read_kv "$OUT_DIR/client2.txt" casts)
+casts_w1=$(read_kv "$OUT_DIR/client1.txt" casts_w)
+casts_w2=$(read_kv "$OUT_DIR/client2.txt" casts_w)
+casts_q1=$(read_kv "$OUT_DIR/client1.txt" casts_q)
+casts_q2=$(read_kv "$OUT_DIR/client2.txt" casts_q)
+casts_e1=$(read_kv "$OUT_DIR/client1.txt" casts_e)
+casts_e2=$(read_kv "$OUT_DIR/client2.txt" casts_e)
 saw_pool1=$(read_kv "$OUT_DIR/client1.txt" saw_pool)
 saw_pool2=$(read_kv "$OUT_DIR/client2.txt" saw_pool)
+saw_beam1=$(read_kv "$OUT_DIR/client1.txt" saw_beam)
+saw_beam2=$(read_kv "$OUT_DIR/client2.txt" saw_beam)
+saw_trap1=$(read_kv "$OUT_DIR/client1.txt" saw_trap)
+saw_trap2=$(read_kv "$OUT_DIR/client2.txt" saw_trap)
+saw_stun1=$(read_kv "$OUT_DIR/client1.txt" saw_stun)
+saw_stun2=$(read_kv "$OUT_DIR/client2.txt" saw_stun)
 took_damage1=$(read_kv "$OUT_DIR/client1.txt" took_damage)
 took_damage2=$(read_kv "$OUT_DIR/client2.txt" took_damage)
 reach_zero1=$(read_kv "$OUT_DIR/client1.txt" reach_zero)
@@ -120,11 +131,11 @@ for id in 1 2; do
     div=$(read_kv "$f" max_divergence)
     rtt=$(read_kv "$f" rtt_ms)
     if [[ "$id" == "1" ]]; then
-        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_casts=$casts1; s_pool=$saw_pool1; s_dmg=$took_damage1; s_zero=$reach_zero1; s_minhp=$min_hp1
+        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_cw=$casts_w1; s_cq=$casts_q1; s_ce=$casts_e1; s_pool=$saw_pool1; s_beam=$saw_beam1; s_trap=$saw_trap1; s_stun=$saw_stun1; s_dmg=$took_damage1; s_zero=$reach_zero1; s_minhp=$min_hp1
     else
-        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_casts=$casts2; s_pool=$saw_pool2; s_dmg=$took_damage2; s_zero=$reach_zero2; s_minhp=$min_hp2
+        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_cw=$casts_w2; s_cq=$casts_q2; s_ce=$casts_e2; s_pool=$saw_pool2; s_beam=$saw_beam2; s_trap=$saw_trap2; s_stun=$saw_stun2; s_dmg=$took_damage2; s_zero=$reach_zero2; s_minhp=$min_hp2
     fi
-    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved casts=$s_casts saw_pool=$s_pool took_damage=$s_dmg min_hp=${s_minhp} reach_zero=$s_zero"
+    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved castW=$s_cw castQ=$s_cq castE=$s_ce saw_pool=$s_pool saw_beam=$s_beam saw_trap=$s_trap saw_stun=$s_stun took_damage=$s_dmg min_hp=${s_minhp} reach_zero=$s_zero"
 done
 
 echo "duel outcome: min_hp1=$min_hp1 min_hp2=$min_hp2 reach_zero1=$reach_zero1 reach_zero2=$reach_zero2"
@@ -133,9 +144,14 @@ healthy=1
 [[ "$moved1" == "true" && "$moved2" == "true" ]] || { healthy=0; echo ">> FAIL: a client did not move"; }
 [[ "$snaps1" == "0" && "$snaps2" == "0" ]] || { healthy=0; echo ">> FAIL: a client snapped (rubber-banding)"; }
 [[ "$samples1" -gt 0 && "$samples2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client received no snapshots"; }
-[[ "$casts1" -gt 0 && "$casts2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast"; }
+[[ "$casts_w1" -gt 0 && "$casts_w2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast a pool"; }
+[[ "$casts_q1" -gt 0 && "$casts_q2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast a beam"; }
+[[ "$casts_e1" -gt 0 && "$casts_e2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not place a trap"; }
 [[ "$saw_pool1" == "true" && "$saw_pool2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a pool"; }
-[[ "$took_damage1" == "true" && "$took_damage2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never took pool damage"; }
+[[ "$saw_beam1" == "true" && "$saw_beam2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a beam"; }
+[[ "$saw_trap1" == "true" && "$saw_trap2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a trap"; }
+[[ "$saw_stun1" == "true" && "$saw_stun2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never observed a stun"; }
+[[ "$took_damage1" == "true" && "$took_damage2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never took damage"; }
 if [[ "$reach_zero1" == "true" || "$reach_zero2" == "true" || "$min_hp1" == "0" || "$min_hp2" == "0" ]]; then
     echo ">> a player reached 0 HP (combat resolved)"
 else
@@ -144,7 +160,7 @@ fi
 
 echo
 if [[ $healthy -eq 1 ]]; then
-    echo "TWO-WINDOW DIAGNOSTIC PASSED: one player reached 0 HP, both dueled, zero reconciliation snaps (no rubber-banding)"
+    echo "TWO-WINDOW DIAGNOSTIC PASSED: one player reached 0 HP, both dueled with pools/beams/traps + stuns, zero reconciliation snaps (no rubber-banding)"
 else
     echo "TWO-WINDOW DIAGNOSTIC FAILED"
 fi

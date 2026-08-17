@@ -1,9 +1,11 @@
 -- Headless two-client diagnostic. Connects two real ENet clients to the configured
--- server, has both players click-to-move repeatedly AND cast Morgana's Pool, and
--- reports each client's RTT, predicted-vs-authoritative divergence, reconciliation
--- snap count, and ability health/pool telemetry. A healthy run shows both players
--- moving with zero snaps (no rubber-banding), both casting, both seeing pools in
--- snapshots, and both taking self-damage from their own pools.
+-- server, has both players click-to-move repeatedly AND cast all three loadout
+-- abilities (Morgana's Pool on W, Beam on Q, Bear Trap on E), and reports each
+-- client's RTT, predicted-vs-authoritative divergence, reconciliation snap count,
+-- and ability telemetry (casts sent, abilities seen, damage taken, stuns seen).
+-- A healthy run shows both players moving with zero snaps (no rubber-banding),
+-- both casting every slot, seeing pools/beams/traps, taking damage, and observing
+-- a stun (each client self-triggers its own trap while standing still).
 -- Run via: lovec.exe . --twoclient   (exit code 0 = healthy, 1 = unhealthy)
 
 local json = require("json")
@@ -46,9 +48,22 @@ local function observe(session, stats)
     if state.health and state.health < 100 then
         stats.tookDamage = true
     end
-    if state.pools and #state.pools > 0 then
-        stats.sawPool = true
+    for _, ability in ipairs(state.abilities or {}) do
+        if ability.ability == "morganapool" then stats.sawPool = true end
+        if ability.ability == "beam" then stats.sawBeam = true end
+        if ability.ability == "beartrap" then stats.sawTrap = true end
     end
+    for _, player in pairs(state.players or {}) do
+        if player.stunned then stats.sawStun = true end
+    end
+end
+
+local function newCastStats()
+    return {
+        sentW = 0, sentQ = 0, sentE = 0,
+        sawPool = false, sawBeam = false, sawTrap = false, sawStun = false,
+        tookDamage = false,
+    }
 end
 
 local function run()
@@ -60,8 +75,8 @@ local function run()
     local stats1 = instrument(session1)
     local stats2 = instrument(session2)
 
-    local castStats1 = { sent = 0, sawPool = false, tookDamage = false }
-    local castStats2 = { sent = 0, sawPool = false, tookDamage = false }
+    local castStats1 = newCastStats()
+    local castStats2 = newCastStats()
 
     local fixedDt = 1 / config.server.tickRate
     local accumulator = 0
@@ -69,6 +84,7 @@ local function run()
     local deadline = lastTime + 15
     local nextClickAt = lastTime + 0.5
     local nextCastAt = lastTime + 1.0
+    local stayUntil = 0
     local clickIndex = 1
     local castIndex = 1
     local targets = {
@@ -77,12 +93,50 @@ local function run()
         { x = 740, y = 60 },
         { x = 60, y = 540 },
     }
-    -- Alternate between a self-cast (damages the caster) and a far cast
-    -- (exercises the authoritative range clamp).
-    local castTargets = {
-        { kind = "self" },
-        { kind = "far", dx = 500, dy = 500 },
+    -- Rotate through the three abilities. Pool self-casts damage the caster and
+    -- far casts exercise the range clamp; the beam aims at the opponent; the trap
+    -- drops at the caster's feet and the caster holds still so it arms + triggers.
+    local castPlan = {
+        { slot = "w", self = true },
+        { slot = "q" },
+        { slot = "e" },
+        { slot = "w", self = false },
     }
+
+    local function tryCast(session, stats, plan, otherSlot, now)
+        if not (session:isPlayer() and session.localPlayer) then
+            return
+        end
+        local lp = session.localPlayer
+        local state = session:getState()
+        local opponent = state.players[otherSlot]
+
+        local cx, cy
+        if plan.slot == "q" then
+            -- Beam: aim in the opponent's direction (direction-based, Lux R feel).
+            cx = opponent and opponent.x or (lp.x + 300)
+            cy = opponent and opponent.y or lp.y
+        elseif plan.slot == "e" then
+            -- Trap: drop at the caster's feet and stop so it arms + triggers.
+            cx, cy = lp.x, lp.y
+            session:localMoveIntent(lp.x, lp.y)
+            stayUntil = now + 1.5
+        elseif plan.self then
+            cx, cy = lp.x, lp.y
+        else
+            cx, cy = lp.x + 500, lp.y + 500
+        end
+
+        if session:localCastIntent(plan.slot, cx, cy) then
+            if plan.slot == "w" then
+                stats.sentW = stats.sentW + 1
+            elseif plan.slot == "q" then
+                stats.sentQ = stats.sentQ + 1
+            elseif plan.slot == "e" then
+                stats.sentE = stats.sentE + 1
+            end
+        end
+    end
 
     while love.timer.getTime() < deadline do
         adapter1:pump()
@@ -103,36 +157,31 @@ local function run()
         end
 
         if now >= nextClickAt then
-            if session1:isPlayer() then
-                session1:localMoveIntent(targets[clickIndex].x, targets[clickIndex].y)
+            local staying = now < stayUntil
+            if session1:isPlayer() and session1.localPlayer then
+                if staying then
+                    session1:localMoveIntent(session1.localPlayer.x, session1.localPlayer.y)
+                else
+                    session1:localMoveIntent(targets[clickIndex].x, targets[clickIndex].y)
+                end
             end
-            if session2:isPlayer() then
-                local other = ((clickIndex + 1) % #targets) + 1
-                session2:localMoveIntent(targets[other].x, targets[other].y)
+            if session2:isPlayer() and session2.localPlayer then
+                if staying then
+                    session2:localMoveIntent(session2.localPlayer.x, session2.localPlayer.y)
+                else
+                    local other = ((clickIndex + 1) % #targets) + 1
+                    session2:localMoveIntent(targets[other].x, targets[other].y)
+                end
             end
             clickIndex = (clickIndex % #targets) + 1
             nextClickAt = now + 3
         end
 
         if now >= nextCastAt then
-            local target = castTargets[castIndex]
-            if session1:isPlayer() and session1.localPlayer then
-                local lp = session1.localPlayer
-                local cx = (target.kind == "far") and (lp.x + target.dx) or lp.x
-                local cy = (target.kind == "far") and (lp.y + target.dy) or lp.y
-                if session1:localCastIntent("w", cx, cy) then
-                    castStats1.sent = castStats1.sent + 1
-                end
-            end
-            if session2:isPlayer() and session2.localPlayer then
-                local lp = session2.localPlayer
-                local cx = (target.kind == "far") and (lp.x + target.dx) or lp.x
-                local cy = (target.kind == "far") and (lp.y + target.dy) or lp.y
-                if session2:localCastIntent("w", cx, cy) then
-                    castStats2.sent = castStats2.sent + 1
-                end
-            end
-            castIndex = (castIndex % #castTargets) + 1
+            local plan = castPlan[castIndex]
+            tryCast(session1, castStats1, plan, "player2", now)
+            tryCast(session2, castStats2, plan, "player1", now)
+            castIndex = (castIndex % #castPlan) + 1
             nextCastAt = now + 2.0
         end
 
@@ -146,10 +195,12 @@ local function run()
 
     local function report(name, session, stats, cast)
         print(string.format(
-            "%s: slot=%s rtt=%.0fms divergence=%.1fpx snaps=%d snapshots=%d casts=%d sawPool=%s tookDamage=%s hp=%.0f",
+            "%s: slot=%s rtt=%.0fms divergence=%.1fpx snaps=%d snapshots=%d castW=%d castQ=%d castE=%d sawPool=%s sawBeam=%s sawTrap=%s sawStun=%s tookDamage=%s hp=%.0f",
             name, tostring(session:getSlot()), (session.latency or 0) * 1000,
-            stats.maxDivergence, stats.snaps, stats.samples, cast.sent,
-            tostring(cast.sawPool), tostring(cast.tookDamage),
+            stats.maxDivergence, stats.snaps, stats.samples,
+            cast.sentW, cast.sentQ, cast.sentE,
+            tostring(cast.sawPool), tostring(cast.sawBeam), tostring(cast.sawTrap),
+            tostring(cast.sawStun), tostring(cast.tookDamage),
             (session:getState().health or 100)))
     end
     report("client1", session1, stats1, castStats1)
@@ -160,15 +211,20 @@ local function run()
 
     local healthy = stats1.samples > 0 and stats2.samples > 0
         and stats1.snaps == 0 and stats2.snaps == 0
-        and castStats1.sent > 0 and castStats2.sent > 0
+        and castStats1.sentW > 0 and castStats2.sentW > 0
+        and castStats1.sentQ > 0 and castStats2.sentQ > 0
+        and castStats1.sentE > 0 and castStats2.sentE > 0
         and castStats1.sawPool and castStats2.sawPool
+        and castStats1.sawBeam and castStats2.sawBeam
+        and castStats1.sawTrap and castStats2.sawTrap
+        and castStats1.sawStun and castStats2.sawStun
         and castStats1.tookDamage and castStats2.tookDamage
 
     if healthy then
-        print("TWO-CLIENT DIAGNOSTIC PASSED (no rubber-banding, both cast and took damage)")
+        print("TWO-CLIENT DIAGNOSTIC PASSED (no rubber-banding, all abilities cast, stuns observed)")
         return true
     end
-    print("TWO-CLIENT DIAGNOSTIC FAILED (snapping, missing casts/pools, or no damage observed)")
+    print("TWO-CLIENT DIAGNOSTIC FAILED (snapping, missing casts/abilities, or no damage/stun observed)")
     return false
 end
 

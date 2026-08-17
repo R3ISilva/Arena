@@ -8,8 +8,8 @@
 --
 -- The outer launcher (scripts/twoclientwin.sh) starts two of these, reads both
 -- result files, and asserts: both players move to each other and duel, both
--- receive snapshots, zero reconciliation snaps (no rubber-banding), pools are
--- placed on each other, and at least one player's health reaches 0.
+-- receive snapshots, zero reconciliation snaps (no rubber-banding), pools/beams/
+-- traps are placed, stuns are observed, and at least one player's health reaches 0.
 --
 -- Run via main.lua flag:  --twoclientwin:child <1|2> --out <abs_dir> [--duration <sec>]
 
@@ -93,7 +93,9 @@ return function(args)
     local stats = {
         snaps = 0, samples = 0, maxDivergence = 0,
         moved = false, gotSnapshot = false,
-        casts = 0, sawPool = false, tookDamage = false,
+        castsW = 0, castsQ = 0, castsE = 0,
+        sawPool = false, sawBeam = false, sawTrap = false, sawStun = false,
+        tookDamage = false,
         minHp = 100, reachZero = false,
     }
     instrument(session, stats)
@@ -112,6 +114,8 @@ return function(args)
 
     local duelState = "converging"  -- "converging" -> "dueling"
     local orbitAngle = math.random() * (math.pi * 2)
+    local castSlots = { "w", "q", "e" } -- rotate through all three abilities
+    local castIndex = 1
     local nextClickOffset = 1.0
     local nextCastOffset = 2.0
     local autoDriving = false
@@ -175,6 +179,18 @@ return function(args)
         love.graphics.circle("line", x, y, PLAYER_RADIUS)
     end
 
+    local function drawStunnedPlayer(x, y)
+        applyColor(COLORS.stunBody)
+        love.graphics.circle("fill", x, y, PLAYER_RADIUS)
+        applyColor(COLORS.stunBody)
+        love.graphics.circle("line", x, y, PLAYER_RADIUS)
+        local t = love.timer.getTime() * 3
+        local rx = x + math.cos(t) * (PLAYER_RADIUS + 7)
+        local ry = y + math.sin(t) * (PLAYER_RADIUS + 7)
+        applyColor(COLORS.stunRing)
+        love.graphics.circle("line", rx, ry, 4)
+    end
+
     local function playerColors(slot)
         if slot == "player1" then
             return COLORS.player1Fill, COLORS.player1Outline
@@ -182,7 +198,7 @@ return function(args)
         return COLORS.player2Fill, COLORS.player2Outline
     end
 
-    local function drawPools()
+    local function drawAbilities()
         for _, ability in ipairs(game:getAbilities()) do
             ability:draw(COLORS)
         end
@@ -218,8 +234,13 @@ return function(args)
             "samples=" .. tostring(stats.samples),
             "max_divergence=" .. string.format("%.1f", stats.maxDivergence),
             "got_snapshot=" .. tostring(stats.gotSnapshot),
-            "casts=" .. tostring(stats.casts),
+            "casts_w=" .. tostring(stats.castsW),
+            "casts_q=" .. tostring(stats.castsQ),
+            "casts_e=" .. tostring(stats.castsE),
             "saw_pool=" .. tostring(stats.sawPool),
+            "saw_beam=" .. tostring(stats.sawBeam),
+            "saw_trap=" .. tostring(stats.sawTrap),
+            "saw_stun=" .. tostring(stats.sawStun),
             "took_damage=" .. tostring(stats.tookDamage),
             "min_hp=" .. string.format("%.0f", stats.minHp),
             "reach_zero=" .. tostring(stats.reachZero),
@@ -337,12 +358,22 @@ return function(args)
                 nextClickOffset = elapsed + ORBIT_TICK
             end
 
-            -- Place a pool directly under the opponent's current position every
-            -- retry interval; the pool cooldown gates how often one actually lands.
+            -- Rotate through W (pool), Q (beam), and E (trap), all aimed at the
+            -- opponent's current position; each slot's cooldown gates how often
+            -- that ability actually lands.
             if elapsed >= nextCastOffset and opponent then
-                if session:localCastIntent("w", opponent.x, opponent.y) then
-                    stats.casts = stats.casts + 1
+                local slot = castSlots[castIndex]
+                local landed = session:localCastIntent(slot, opponent.x, opponent.y)
+                if landed then
+                    if slot == "w" then
+                        stats.castsW = stats.castsW + 1
+                    elseif slot == "q" then
+                        stats.castsQ = stats.castsQ + 1
+                    else
+                        stats.castsE = stats.castsE + 1
+                    end
                 end
+                castIndex = (castIndex % #castSlots) + 1
                 nextCastOffset = elapsed + CAST_RETRY
             end
 
@@ -350,8 +381,19 @@ return function(args)
                 stats.moved = true
             end
 
-            if #game:getAbilities() > 0 then
-                stats.sawPool = true
+            for _, ability in ipairs(game:getAbilities()) do
+                if ability.abilityId == "morganapool" then
+                    stats.sawPool = true
+                elseif ability.abilityId == "beam" then
+                    stats.sawBeam = true
+                elseif ability.abilityId == "beartrap" then
+                    stats.sawTrap = true
+                end
+            end
+            for _, player in pairs(state.players or {}) do
+                if player.stunned then
+                    stats.sawStun = true
+                end
             end
 
             if elapsed >= DURATION then
@@ -372,13 +414,17 @@ return function(args)
             drawPath(session:getLocalPath())
         end
 
-        drawPools()
+        drawAbilities()
 
         for _, slot in ipairs({ "player1", "player2" }) do
             local player = state.players[slot]
             if player then
-                local fill, outline = playerColors(slot)
-                drawPlayer(player.x, player.y, fill, outline)
+                if player.stunned then
+                    drawStunnedPlayer(player.x, player.y)
+                else
+                    local fill, outline = playerColors(slot)
+                    drawPlayer(player.x, player.y, fill, outline)
+                end
                 if player.hp ~= nil then
                     drawOverheadHealth(player.x, player.y, player.hp)
                 end

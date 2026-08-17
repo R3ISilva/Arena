@@ -20,18 +20,20 @@ Exit codes: `0` = pass, `1` = fail.
 
 ## 1. `--test` — headless session suite (**run_tests.lua**)
 
-The main automated suite: 40 unit/integration tests over the transport-agnostic
+The main automated suite: 63 unit/integration tests over the transport-agnostic
 `session` module — no network needed. Covers slot assignment, spawn points,
 server movement authority, snapshot emission/sequencing, disconnect recovery,
 client prediction/validation, reconciliation vs RTT, remote interpolation,
 spectator behavior, and the server-authoritative ability system (registry,
 cast clamp-to-range, cooldown enforcement, pool lifecycle/damage ticks, health
-floor, loadout resolution, cast intent handling, and client prediction of casts).
+floor, loadout resolution, cast intent handling, and client prediction of casts),
+plus the new Beam (direction/windup/burst), Bear Trap (arming/trigger/cap), and
+stun status effect (movement/cast lockdown, beam refund, snapshot sync).
 
 ```bash
 "C:/Program Files/LOVE/lovec.exe" . --test
 ```
-Bar: `40 passed, 0 failed` / `ALL TESTS PASSED`, exit 0.
+Bar: `63 passed, 0 failed` / `ALL TESTS PASSED`, exit 0.
 
 ## 2. `--probe` — live connectivity probe (**probe.lua**)
 
@@ -47,11 +49,12 @@ Bar: `PROBE PASSED`.
 ## 3. `--twoclient` — headless two-client diagnostic (**twoclient.lua**)
 
 Two real ENet clients (no windows) connect to the pick, both click-to-move across
-the arena and cast Morgana's Pool (self-casts to take damage + far casts to
-exercise the range clamp) for ~15s. Each reports RTT, predicted-vs-authoritative
-divergence, reconciliation snap count, and ability telemetry (casts sent, pools
-seen, damage taken). A healthy run shows **zero snaps** (no rubber-banding) with
-both clients casting, seeing pools, and taking damage.
+the arena and cast all three abilities — Morgana's Pool (W), Beam (Q), and Bear
+Trap (E) — for ~15s. Each reports RTT, predicted-vs-authoritative divergence,
+reconciliation snap count, and ability telemetry (casts sent per slot, pools/
+beams/traps seen, damage taken, stuns observed). A healthy run shows **zero
+snaps** (no rubber-banding) with both clients casting every slot, seeing all
+three abilities, taking damage, and observing a stun.
 
 ```bash
 "C:/Program Files/LOVE/lovec.exe" . --twoclient
@@ -69,10 +72,12 @@ Bar: both `snaps=0`, exit 0.
 This self-contained folder holds the launcher (`twoclientwin.sh`) and the
 auto-drive client it launches twice (`twoclientclient.lua`). It brings the pick
 up itself, opens **two** GUI windows that converge, orbit-strafe each other, and
-place Morgana's Pool directly *on each other* (rendering the purple pools +
-overhead health bars that drain to zero), and after ~30s both windows **close
-themselves** and the launcher asserts both moved, cast, saw pools, took damage,
-and that **at least one player reached 0 HP** — all with zero snaps.
+place Morgana's Pool, fire Beams, and drop Bear Traps on each other (rendering
+the purple pools, gold beam telegraphs/bursts, arming traps, yellow stun
+overlays, and overhead health bars that drain to zero), and after ~30s both
+windows **close themselves** and the launcher asserts both moved, cast all three
+slots, saw pools/beams/traps, observed stuns, took damage, and that **at least
+one player reached 0 HP** — all with zero snaps.
 
 ```bash
 bash tests/two-client-with-head-test/twoclientwin.sh            # stops the server after

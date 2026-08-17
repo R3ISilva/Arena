@@ -1,9 +1,9 @@
 -- Pure, network-agnostic game simulation. Owns the world and the authoritative
 -- player state: spawning, move targets, pathfinding (via world), fixed-step
 -- movement, and the server-authoritative ability simulation (per-player health,
--- per-slot loadouts/cooldowns, and active abilities/pools). It knows nothing
--- about peers, connections, messages, channels, or sequence numbers — the
--- session layer translates network I/O into these calls.
+-- per-slot loadouts/cooldowns, active abilities, and the stun status effect).
+-- It knows nothing about peers, connections, messages, channels, or sequence
+-- numbers — the session layer translates network I/O into these calls.
 --
 -- Both the dedicated server (authority) and the windowed client (prediction)
 -- drive their own Game instance through the same interface, which is what keeps
@@ -17,7 +17,7 @@ local Game = {}
 Game.__index = Game
 
 local INITIAL_HEALTH = 100
-local DEFAULT_LOADOUT = { q = nil, w = "morganapool", e = nil }
+local DEFAULT_LOADOUT = { q = "beam", w = "morganapool", e = "beartrap" }
 
 local function clamp(value, lo, hi)
     return math.max(lo, math.min(hi, value))
@@ -33,6 +33,7 @@ function Game.new(config)
     self.health = {}        -- slot -> number (display-only, floored at 0)
     self.loadouts = {}      -- slot -> { q, w, e } ability ids (server-owned)
     self.cooldowns = {}     -- slot -> { q, w, e } remaining seconds
+    self.stun = {}          -- slot -> remaining stun seconds
     self.abilities = {}     -- list of active ability instances
     self.nextAbilityId = 1
     return self
@@ -50,6 +51,7 @@ function Game:spawnPlayer(slot)
     self.health[slot] = INITIAL_HEALTH
     self.loadouts[slot] = { q = DEFAULT_LOADOUT.q, w = DEFAULT_LOADOUT.w, e = DEFAULT_LOADOUT.e }
     self.cooldowns[slot] = { q = 0, w = 0, e = 0 }
+    self.stun[slot] = nil
 end
 
 function Game:removePlayer(slot)
@@ -57,6 +59,7 @@ function Game:removePlayer(slot)
     self.health[slot] = nil
     self.loadouts[slot] = nil
     self.cooldowns[slot] = nil
+    self.stun[slot] = nil
     for i = #self.abilities, 1, -1 do
         if self.abilities[i].owner == slot then
             table.remove(self.abilities, i)
@@ -105,13 +108,17 @@ function Game:getTarget(slot)
 end
 
 -- Cast an ability from a player's loadout slot. Resolves the slot's ability,
--- rejects empty/cooldown slots, clamps the target to the ability's range from
--- the caster, instantiates the ability, and starts the cooldown. Returns the
--- clamped coordinates (plus the instance) so callers can echo the authoritative
+-- rejects empty/cooldown/stunned casters, clamps the target to the ability's
+-- range from the caster, enforces a per-owner active cap (oldest removed),
+-- instantiates the ability, and starts the cooldown. Returns the clamped
+-- coordinates (plus the instance) so callers can echo the authoritative
 -- placement; returns nil if the cast was rejected.
 function Game:castAbility(slot, key, x, y)
     local player = self.players[slot]
     if not player then
+        return nil
+    end
+    if self:isStunned(slot) then
         return nil
     end
     local loadout = self.loadouts[slot]
@@ -142,11 +149,42 @@ function Game:castAbility(slot, key, x, y)
         cy = player.y + dy * scale
     end
 
+    -- Abilities that require open ground (e.g. traps) reject a placement whose
+    -- center falls inside an obstacle. The ability's circle may still overlap the
+    -- wall edge, mirroring how point placement works elsewhere.
+    if abilityModule.blockedByObstacles and self:isInsideObstacle(cx, cy) then
+        return nil
+    end
+
+    -- Per-owner active cap (e.g. traps): remove the oldest instance when at cap.
+    if abilityModule.maxActive then
+        local owned = {}
+        for _, existing in ipairs(self.abilities) do
+            if existing.owner == slot and existing.abilityId == abilityId then
+                table.insert(owned, existing)
+            end
+        end
+        if #owned >= abilityModule.maxActive then
+            local oldest = owned[1]
+            for _, existing in ipairs(owned) do
+                if existing.id < oldest.id then
+                    oldest = existing
+                end
+            end
+            for i = #self.abilities, 1, -1 do
+                if self.abilities[i] == oldest then
+                    table.remove(self.abilities, i)
+                    break
+                end
+            end
+        end
+    end
+
     local instance = abilityModule.new(slot, cx, cy)
     instance.id = self.nextAbilityId
     self.nextAbilityId = self.nextAbilityId + 1
     instance.abilityId = abilityId
-    instance:cast(slot, cx, cy)
+    instance:cast(slot, cx, cy, player.x, player.y)
     table.insert(self.abilities, instance)
 
     cooldowns[key] = abilityModule.cooldown
@@ -178,13 +216,76 @@ function Game:setCooldowns(slot, cooldowns)
     current.e = cooldowns.e or 0
 end
 
--- Replace the local ability list with authoritative pools from a snapshot.
-function Game:applySnapshotPools(pools)
+----------------------------------------
+-- Stun status effect
+----------------------------------------
+function Game:isStunned(slot)
+    return (self.stun[slot] or 0) > 0
+end
+
+function Game:getStunRemaining(slot)
+    return self.stun[slot] or 0
+end
+
+-- Apply a stun: record the remaining time and clear the player's move order.
+function Game:applyStun(slot, duration)
+    if duration <= 0 then
+        return
+    end
+    self.stun[slot] = duration
+    self:clearTarget(slot)
+end
+
+-- Authoritative stun reconciliation (client snapshots).
+function Game:setStun(slot, stunned, remaining)
+    if stunned and remaining and remaining > 0 then
+        self.stun[slot] = remaining
+    else
+        self.stun[slot] = nil
+    end
+end
+
+-- A stun landing during a beam windup cancels the cast and refunds its cooldown.
+function Game:cancelBeamCharge(slot)
+    for i = #self.abilities, 1, -1 do
+        local ability = self.abilities[i]
+        if ability.owner == slot and ability.type == "beam" and ability.phase == "charging" then
+            table.remove(self.abilities, i)
+        end
+    end
+
+    local loadout = self.loadouts[slot]
+    local cooldowns = self.cooldowns[slot]
+    if loadout and cooldowns then
+        for key, id in pairs(loadout) do
+            if id == "beam" then
+                cooldowns[key] = 0
+                break
+            end
+        end
+    end
+end
+
+-- True while the player is rooted by a charging ability (e.g. Beam windup).
+function Game:isRooted(slot)
+    for _, ability in ipairs(self.abilities) do
+        if ability.owner == slot and ability.isRooting and ability:isRooting() then
+            return true
+        end
+    end
+    return false
+end
+
+-- Replace the local ability list with authoritative abilities from a snapshot.
+function Game:applySnapshotAbilities(abilities)
     local result = {}
-    for _, entry in ipairs(pools or {}) do
+    for _, entry in ipairs(abilities or {}) do
         local instance = registry.new(entry.ability, entry.owner, entry.x, entry.y, entry.remaining)
         instance.id = entry.id
         instance.abilityId = entry.ability
+        if instance.applySnapshot then
+            instance:applySnapshot(entry)
+        end
         table.insert(result, instance)
     end
     self.abilities = result
@@ -194,8 +295,21 @@ end
 -- Simulation step
 ----------------------------------------
 function Game:tick(dt)
-    for _, player in pairs(self.players) do
-        self.world:stepPlayer(player, dt)
+    -- Advance existing stun timers toward zero.
+    for slot, remaining in pairs(self.stun) do
+        remaining = remaining - dt
+        if remaining <= 0 then
+            self.stun[slot] = nil
+        else
+            self.stun[slot] = remaining
+        end
+    end
+
+    -- Movement: skip stunned players and players rooted by a charging ability.
+    for slot, player in pairs(self.players) do
+        if not self:isStunned(slot) and not self:isRooted(slot) then
+            self.world:stepPlayer(player, dt)
+        end
     end
 
     -- Advance per-slot cooldowns toward zero.
@@ -211,17 +325,16 @@ function Game:tick(dt)
         end
     end
 
-    -- Advance active abilities and apply their damage ticks. A pool deals its
-    -- per-tick damage to every player whose circle overlaps the pool's circle
-    -- (including the caster); placement ignores obstacles.
     local playerRadius = self.world.radius
-    for i = #self.abilities, 1, -1 do
-        local ability = self.abilities[i]
-        local ticks = ability:update(dt)
-        if not ability.active then
-            table.remove(self.abilities, i)
-        end
-        if ticks and ticks > 0 then
+
+    -- Advance active abilities and apply their damage. A pool deals its per-tick
+    -- damage to every player whose circle overlaps the pool's circle (including
+    -- the caster). A beam applies its burst once, when its windup completes, to
+    -- every player overlapping its line (never the caster).
+    for _, ability in ipairs(self.abilities) do
+        local result = ability:update(dt) or {}
+
+        if ability.damageModel == "tick" and result.ticks and result.ticks > 0 then
             local perTick = ability:getTickDamage()
             local reach = ability.radius + playerRadius
             local reachSq = reach * reach
@@ -229,11 +342,92 @@ function Game:tick(dt)
                 local px = player.x - ability.x
                 local py = player.y - ability.y
                 if px * px + py * py <= reachSq then
-                    self.health[slot] = math.max(0, self.health[slot] - ticks * perTick)
+                    self.health[slot] = math.max(0, self.health[slot] - result.ticks * perTick)
+                end
+            end
+        end
+
+        if ability.damageModel == "burst" and result.burst then
+            local damage = ability:getBurstDamage()
+            for slot, player in pairs(self.players) do
+                if slot ~= ability.owner and self:overlapsBeam(ability, player.x, player.y) then
+                    self.health[slot] = math.max(0, self.health[slot] - damage)
                 end
             end
         end
     end
+
+    -- Single-use overlap triggers (traps): an armed trap stuns and is consumed by
+    -- the first non-stunned player whose circle overlaps it.
+    local newlyStunned = {}
+    for _, ability in ipairs(self.abilities) do
+        if ability.trigger == "overlap" and ability.armed and ability.active then
+            local reach = ability.radius + playerRadius
+            local reachSq = reach * reach
+            for slot, player in pairs(self.players) do
+                if not self:isStunned(slot) then
+                    local px = player.x - ability.x
+                    local py = player.y - ability.y
+                    if px * px + py * py <= reachSq then
+                        self:applyStun(slot, ability.stunDuration or 0)
+                        newlyStunned[slot] = true
+                        ability.active = false
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    -- A stun that landed during a beam windup cancels the cast and refunds it.
+    for slot in pairs(newlyStunned) do
+        self:cancelBeamCharge(slot)
+    end
+
+    -- Remove expired/consumed abilities.
+    for i = #self.abilities, 1, -1 do
+        if not self.abilities[i].active then
+            table.remove(self.abilities, i)
+        end
+    end
+end
+
+-- True when a point falls strictly inside any obstacle rectangle (matching the
+-- world's walkability convention: the boundary itself is open ground).
+-- Deterministic on both client and server, so predicted placements reconcile.
+function Game:isInsideObstacle(x, y)
+    local obstacles = self.world.obstacles
+    for i = 1, #obstacles do
+        local o = obstacles[i]
+        if x > o.x and x < o.x + o.width and y > o.y and y < o.y + o.height then
+            return true
+        end
+    end
+    return false
+end
+
+-- Distance from a point to a beam's center segment (capsule overlap test).
+function Game:overlapsBeam(ability, px, py)
+    local ox, oy = ability.x, ability.y
+    local dx, dy = ability.directionX, ability.directionY
+    local length = ability.length or 0
+    local halfWidth = (ability.width or 0) / 2
+
+    local vx = px - ox
+    local vy = py - oy
+    local t = vx * dx + vy * dy
+    if t < 0 then
+        t = 0
+    elseif t > length then
+        t = length
+    end
+
+    local closestX = ox + dx * t
+    local closestY = oy + dy * t
+    local distX = px - closestX
+    local distY = py - closestY
+    local reach = halfWidth + self.world.radius
+    return distX * distX + distY * distY <= reach * reach
 end
 
 ----------------------------------------
@@ -245,20 +439,32 @@ function Game:getPlayerRef(slot)
     return self.players[slot]
 end
 
--- Read-only copy of a player's position and health.
+-- Read-only copy of a player's position, health, and stun state.
 function Game:getPlayer(slot)
     local player = self.players[slot]
     if not player then
         return nil
     end
-    return { x = player.x, y = player.y, hp = self.health[slot] }
+    return {
+        x = player.x,
+        y = player.y,
+        hp = self.health[slot],
+        stunned = self:isStunned(slot),
+        stunRemaining = self:getStunRemaining(slot),
+    }
 end
 
--- Read-only snapshot of all player positions + health: slot -> { x, y, hp }.
+-- Read-only snapshot of all player positions + health + stun: slot -> table.
 function Game:getPlayers()
     local result = {}
     for slot, player in pairs(self.players) do
-        result[slot] = { x = player.x, y = player.y, hp = self.health[slot] }
+        result[slot] = {
+            x = player.x,
+            y = player.y,
+            hp = self.health[slot],
+            stunned = self:isStunned(slot),
+            stunRemaining = self:getStunRemaining(slot),
+        }
     end
     return result
 end
@@ -280,19 +486,36 @@ function Game:getAbilities()
     return self.abilities
 end
 
--- Serialized pool list for snapshots: { id, ability, x, y, radius, owner, remaining }.
-function Game:getPoolsSnapshot()
+-- Count a player's active abilities of a given id (e.g. placed traps).
+function Game:countActiveAbilities(slot, abilityId)
+    local count = 0
+    for _, ability in ipairs(self.abilities) do
+        if ability.owner == slot and ability.abilityId == abilityId then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Serialized ability list for snapshots: { id, ability, owner, x, y, remaining,
+-- plus type-specific fields from the ability's getSnapshot() }.
+function Game:getAbilitiesSnapshot()
     local result = {}
     for _, ability in ipairs(self.abilities) do
-        table.insert(result, {
+        local entry = {
             id = ability.id,
             ability = ability.abilityId,
+            owner = ability.owner,
             x = ability.x,
             y = ability.y,
-            radius = ability.radius,
-            owner = ability.owner,
             remaining = ability.remaining,
-        })
+        }
+        if ability.getSnapshot then
+            for k, v in pairs(ability:getSnapshot()) do
+                entry[k] = v
+            end
+        end
+        table.insert(result, entry)
     end
     return result
 end

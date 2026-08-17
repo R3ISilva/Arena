@@ -229,20 +229,28 @@ function Session:applySnapshot(message)
             if entry.cooldowns then
                 self.game:setCooldowns(entry.slot, entry.cooldowns)
             end
+            self.game:setStun(entry.slot, entry.stunned, entry.stunRemaining)
         else
             local buffer = self.remoteBuffers[entry.slot]
             if not buffer then
                 buffer = {}
                 self.remoteBuffers[entry.slot] = buffer
             end
-            table.insert(buffer, { time = now, x = entry.x, y = entry.y, hp = entry.hp })
+            table.insert(buffer, {
+                time = now,
+                x = entry.x,
+                y = entry.y,
+                hp = entry.hp,
+                stunned = entry.stunned,
+                stunRemaining = entry.stunRemaining,
+            })
             if #buffer > 60 then
                 table.remove(buffer, 1)
             end
         end
     end
 
-    self.game:applySnapshotPools(message.pools)
+    self.game:applySnapshotAbilities(message.abilities)
 end
 
 -- Snap the predicted position to the authoritative one when they diverge, then
@@ -312,6 +320,8 @@ function Session:emitSnapshot()
                 y = position.y,
                 hp = position.hp,
                 cooldowns = cooldowns and { q = cooldowns.q, w = cooldowns.w, e = cooldowns.e } or nil,
+                stunned = position.stunned,
+                stunRemaining = position.stunRemaining,
             })
         end
     end
@@ -320,7 +330,7 @@ function Session:emitSnapshot()
         type = "snapshot",
         seq = self.seq,
         players = players,
-        pools = self.game:getPoolsSnapshot(),
+        abilities = self.game:getAbilitiesSnapshot(),
     })
     self.seq = self.seq + 1
 end
@@ -333,10 +343,12 @@ function Session:updateInterpolation()
             self.remoteRendered[slot] = nil
         else
             local hp = buffer[#buffer].hp
+            local stunned = buffer[#buffer].stunned
+            local stunRemaining = buffer[#buffer].stunRemaining
             if #buffer == 1 or targetTime <= buffer[1].time then
-                self.remoteRendered[slot] = { x = buffer[1].x, y = buffer[1].y, hp = hp }
+                self.remoteRendered[slot] = { x = buffer[1].x, y = buffer[1].y, hp = hp, stunned = stunned, stunRemaining = stunRemaining }
             elseif targetTime >= buffer[#buffer].time then
-                self.remoteRendered[slot] = { x = buffer[#buffer].x, y = buffer[#buffer].y, hp = hp }
+                self.remoteRendered[slot] = { x = buffer[#buffer].x, y = buffer[#buffer].y, hp = hp, stunned = stunned, stunRemaining = stunRemaining }
             else
                 for i = 1, #buffer - 1 do
                     local a, b = buffer[i], buffer[i + 1]
@@ -347,6 +359,8 @@ function Session:updateInterpolation()
                             x = a.x + (b.x - a.x) * fraction,
                             y = a.y + (b.y - a.y) * fraction,
                             hp = hp,
+                            stunned = stunned,
+                            stunRemaining = stunRemaining,
                         }
                         break
                     end
@@ -377,7 +391,7 @@ function Session:getState()
         return {
             mode = "server",
             players = self.game:getPlayers(),
-            pools = self.game:getPoolsSnapshot(),
+            abilities = self.game:getAbilitiesSnapshot(),
             seq = self.seq,
         }
     end
@@ -403,7 +417,7 @@ function Session:getState()
         slot = self.slot,
         connected = self.connected,
         players = players,
-        pools = self.game:getPoolsSnapshot(),
+        abilities = self.game:getAbilitiesSnapshot(),
         loadout = loadout,
         cooldowns = cooldowns,
         health = health,

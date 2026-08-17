@@ -1,6 +1,6 @@
 -- Windowed multiplayer client. Connects to the server from config, predicts its
 -- own player + casts, interpolates the remote player, and renders the shared
--- arena (pools, health bars, and the Q/W/E ability HUD).
+-- arena (pools, beams, traps, stuns, health bars, and the Q/W/E ability HUD).
 --
 -- Input: right-click moves; holding an ability key (Q/W/E) enters aim mode and
 -- left-clicking places the ability. Releasing the key cancels aim.
@@ -160,6 +160,26 @@ function client.run(config)
         love.graphics.circle("line", x, y, PLAYER_RADIUS)
     end
 
+    -- Stunned players: yellow body plus an orbiting ring so the status reads at
+    -- a glance from any angle.
+    local function drawStunnedPlayer(x, y)
+        local body = COLORS.stunBody
+        local ring = COLORS.stunRing
+
+        applyColor(body)
+        love.graphics.circle("fill", x, y, PLAYER_RADIUS)
+
+        applyColor(body)
+        love.graphics.circle("line", x, y, PLAYER_RADIUS)
+
+        local t = love.timer.getTime() * 3
+        local orbitRadius = PLAYER_RADIUS + 7
+        local rx = x + math.cos(t) * orbitRadius
+        local ry = y + math.sin(t) * orbitRadius
+        applyColor(ring)
+        love.graphics.circle("line", rx, ry, 4)
+    end
+
     local function playerColors(slot)
         if slot == "player1" then
             return COLORS.player1Fill, COLORS.player1Outline
@@ -266,6 +286,18 @@ function client.run(config)
                 love.graphics.print(nameText or subText, x + 8, hudY + HUD_BOX - 24)
             end
 
+            -- Live trap counter on the E hotkey (hidden at zero).
+            if key == "e" then
+                local trapCount = game:countActiveAbilities(slot, "beartrap")
+                if trapCount >= 1 then
+                    love.graphics.setFont(smallFont)
+                    applyColor(COLORS.hudText)
+                    local label = tostring(trapCount) .. "/4"
+                    local labelWidth = smallFont:getWidth(label)
+                    love.graphics.print(label, x + HUD_BOX - labelWidth - 6, hudY + 6)
+                end
+            end
+
             applyColor(borderColor)
             love.graphics.rectangle("line", x, hudY, HUD_BOX, HUD_BOX)
         end
@@ -290,6 +322,15 @@ function client.run(config)
 
         adapter:flushOutbox()
         updateEffects(dt)
+
+        -- A stun cancels a held aim mode.
+        if aimingSlot and session:isPlayer() then
+            local state = session:getState()
+            local me = state.players[session:getSlot()]
+            if me and me.stunned then
+                aimingSlot = nil
+            end
+        end
     end
 
     function love.draw()
@@ -305,7 +346,7 @@ function client.run(config)
             drawPath(session:getLocalPath())
         end
 
-        -- Pools render above the grid/obstacles and below player markers.
+        -- Abilities render above the grid/obstacles and below player markers.
         for _, ability in ipairs(game:getAbilities()) do
             ability:draw(COLORS)
         end
@@ -316,8 +357,12 @@ function client.run(config)
         for _, s in ipairs({ "player1", "player2" }) do
             local player = state.players[s]
             if player then
-                local fill, outline = playerColors(s)
-                drawPlayer(player.x, player.y, fill, outline)
+                if player.stunned then
+                    drawStunnedPlayer(player.x, player.y)
+                else
+                    local fill, outline = playerColors(s)
+                    drawPlayer(player.x, player.y, fill, outline)
+                end
                 if s ~= slot and player.hp ~= nil then
                     drawOverheadHealth(player.x, player.y, player.hp)
                 end
@@ -362,9 +407,10 @@ function client.run(config)
         elseif key == "q" or key == "w" or key == "e" then
             if session:isPlayer() then
                 local state = session:getState()
+                local me = state.players[session:getSlot()]
                 local loadout = state.loadout
                 local cooldowns = state.cooldowns
-                if loadout and loadout[key] and cooldowns and (cooldowns[key] or 0) <= 0 then
+                if me and not me.stunned and loadout and loadout[key] and cooldowns and (cooldowns[key] or 0) <= 0 then
                     aimingSlot = key
                 end
             end

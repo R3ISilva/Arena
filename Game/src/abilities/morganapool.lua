@@ -15,6 +15,9 @@ Pool.__index = Pool
 -- Static tuning + metadata (the shared ability contract).
 Pool.name = "Morgana's Pool"
 Pool.type = "pool"
+Pool.shape = "circle"          -- circular damage shape
+Pool.damageModel = "tick"      -- damage applied as per-second ticks
+Pool.trigger = nil             -- no overlap trigger
 Pool.cooldown = 6    -- seconds, starts on cast
 Pool.damage = 30     -- damage per second, applied as ticks
 Pool.range = 200     -- cast range in pixels (clamped at the boundary)
@@ -53,12 +56,22 @@ function Pool:update(dt)
         self.remaining = 0
         self.active = false
     end
-    return ticks
+    return { ticks = ticks }
 end
 
 -- Damage applied per tick (30/sec over 0.25s ticks).
 function Pool:getTickDamage()
     return Pool.damage * Pool.tickInterval
+end
+
+-- Pool never roots its caster.
+function Pool:isRooting()
+    return false
+end
+
+-- Type-specific snapshot fields (effect radius).
+function Pool:getSnapshot()
+    return { radius = Pool.radius }
 end
 
 -- Placeholder rendering: translucent purple fill with a brighter outline.
