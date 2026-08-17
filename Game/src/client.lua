@@ -1,9 +1,10 @@
 -- Windowed multiplayer client. Connects to the server from config, predicts its
 -- own player + casts, interpolates the remote player, and renders the shared
--- arena (pools, beams, traps, stuns, health bars, and the Q/W/E ability HUD).
+-- arena (pools, beams, traps, projectiles, stuns, health bars, and the Q/W/E/R
+-- ability HUD).
 --
--- Input: right-click moves; holding an ability key (Q/W/E) enters aim mode and
--- left-clicking places the ability. Releasing the key cancels aim.
+-- Input: right-click moves; holding an ability key (Q/W/E/R) enters aim mode and
+-- left-clicking casts the ability. Releasing the key cancels aim.
 
 local Game = require("src.game")
 local Session = require("src.session")
@@ -41,7 +42,7 @@ function client.run(config)
     local fixedDt = 1 / config.server.tickRate
     local accumulator = 0
 
-    local aimingSlot = nil -- "q" | "w" | "e" while the ability key is held
+    local aimingSlot = nil -- "q" | "w" | "e" | "r" while the ability key is held
     local keyFont, smallFont
     local abilityAtlas
 
@@ -224,7 +225,7 @@ function client.run(config)
         )
     end
 
-    -- League-style bottom-center HUD: Q/W/E boxes with ready/cooldown/empty
+    -- League-style bottom-center HUD: Q/W/E/R boxes with ready/cooldown/empty
     -- states, and the local player's health bar above them.
     local HUD_BOX = 56
     local HUD_GAP = 8
@@ -242,7 +243,7 @@ function client.run(config)
             return
         end
 
-        local totalWidth = HUD_BOX * 3 + HUD_GAP * 2
+        local totalWidth = HUD_BOX * 4 + HUD_GAP * 3
         local startX = (WINDOW_WIDTH - totalWidth) / 2
         local hudY = WINDOW_HEIGHT - HUD_BOX - 16
 
@@ -257,7 +258,7 @@ function client.run(config)
             COLORS.healthBack
         )
 
-        local keys = { "q", "w", "e" }
+        local keys = { "q", "w", "e", "r" }
         for i, key in ipairs(keys) do
             local x = startX + (i - 1) * (HUD_BOX + HUD_GAP)
             local abilityId = loadout[key]
@@ -439,7 +440,7 @@ function client.run(config)
     function love.keypressed(key)
         if key == "escape" then
             love.event.quit()
-        elseif key == "q" or key == "w" or key == "e" then
+        elseif key == "q" or key == "w" or key == "e" or key == "r" then
             if session:isPlayer() then
                 local state = session:getState()
                 local me = state.players[session:getSlot()]

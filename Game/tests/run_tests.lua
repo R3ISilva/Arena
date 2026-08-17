@@ -313,6 +313,20 @@ test("game spawns players at slot-specific spawn points", function()
     assertEqual(p2.y, 175)
 end)
 
+test("default loadout and cooldowns include an r slot bound to morganastun", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local loadout = game:getLoadout("player1")
+    assertEqual(loadout.q, "beam")
+    assertEqual(loadout.w, "morganapool")
+    assertEqual(loadout.e, "beartrap")
+    assertEqual(loadout.r, "morganastun")
+
+    local cooldowns = game:getCooldowns("player1")
+    assertEqual(cooldowns.r, 0, "r cooldown starts at zero")
+end)
+
 test("game setTarget clamps coordinates to the arena", function()
     local game = Game.new(makeConfig())
     game:spawnPlayer("player1")
@@ -618,6 +632,8 @@ test("ability registry loads morganapool with its declared properties", function
     assertEqual(module.range, 200)
     assertEqual(module.radius, 60)
     assertEqual(module.duration, 2)
+    assertEqual(module.charge, 0.5)
+    assertEqual(module.cancelable, true)
 end)
 
 ----------------------------------------
@@ -655,31 +671,38 @@ test("game castAbility rejects a recast during cooldown", function()
     assertTrue(again ~= nil, "cast should succeed after the cooldown expires")
 end)
 
-test("pool spawns and expires after its duration", function()
+test("pool spawns with a windup and expires after windup + duration", function()
     local game = Game.new(makeConfig())
     game:spawnPlayer("player1")
 
     game:castAbility("player1", "w", 200, 25)
     assertEqual(#game:getAbilities(), 1)
 
-    for _ = 1, 59 do game:tick(1 / 30) end
-    assertEqual(#game:getAbilities(), 1, "pool should still be active just under 2s")
+    -- Windup (0.5s) + duration (2s) = 2.5s total = 75 ticks.
+    for _ = 1, 74 do game:tick(1 / 30) end
+    assertEqual(#game:getAbilities(), 1, "pool should still be active just under 2.5s")
 
     for _ = 1, 3 do game:tick(1 / 30) end
-    assertEqual(#game:getAbilities(), 0, "pool should expire after 2s")
+    assertEqual(#game:getAbilities(), 0, "pool should expire after windup + duration")
 end)
 
-test("a player standing in a pool loses health in ticks", function()
+test("a player standing in a pool loses health in ticks after the windup", function()
     local game = Game.new(makeConfig())
     game:spawnPlayer("player1")
     game:castAbility("player1", "w", 25, 25) -- pool centered on the caster
 
     assertEqual(game:getHealth("player1"), 100)
 
-    for _ = 1, 8 do game:tick(1 / 30) end -- ~0.27s -> one 0.25s tick
+    -- Windup (0.5s) completes around tick 16; no damage is dealt during it.
+    for _ = 1, 16 do game:tick(1 / 30) end
+    assertEqual(game:getHealth("player1"), 100, "no damage during the windup")
+
+    -- ~0.3s active -> one 0.25s tick (7.5 damage).
+    for _ = 1, 9 do game:tick(1 / 30) end
     assertNear(game:getHealth("player1"), 92.5, 0.01, "one tick = 7.5 damage")
 
-    for _ = 1, 23 do game:tick(1 / 30) end -- ~1.03s total -> four ticks
+    -- ~1.03s active total -> four ticks (30 damage).
+    for _ = 1, 22 do game:tick(1 / 30) end
     assertNear(game:getHealth("player1"), 70, 0.01, "four ticks = 30 damage")
 end)
 
@@ -689,12 +712,13 @@ test("health never drops below 0", function()
 
     game:setHealth("player1", 3)
     game:castAbility("player1", "w", 25, 25)
+    for _ = 1, 15 do game:tick(1 / 30) end -- windup
     for _ = 1, 10 do game:tick(1 / 30) end -- one tick (7.5) exceeds remaining 3
 
     assertEqual(game:getHealth("player1"), 0)
 end)
 
-test("loadout resolves q, w, and e slots", function()
+test("loadout resolves q, w, e, and r slots", function()
     local game = Game.new(makeConfig())
     game:spawnPlayer("player1")
 
@@ -708,6 +732,9 @@ test("loadout resolves q, w, and e slots", function()
 
     local ex = game:castAbility("player1", "e", 50, 50)
     assertTrue(ex ~= nil, "e slot should resolve to beartrap")
+
+    local rx = game:castAbility("player1", "r", 100, 100)
+    assertTrue(rx ~= nil, "r slot should resolve to morganastun")
 end)
 
 ----------------------------------------
@@ -723,6 +750,7 @@ test("server welcome includes the recipient loadout", function()
     assertEqual(welcome.loadout.w, "morganapool")
     assertEqual(welcome.loadout.q, "beam")
     assertEqual(welcome.loadout.e, "beartrap")
+    assertEqual(welcome.loadout.r, "morganastun")
 end)
 
 test("server castIntent spawns an authoritative pool", function()
@@ -793,7 +821,7 @@ test("cast intents from spectators and invalid slots are ignored", function()
     session:drainOutbox()
 
     session:onMessage(3, { type = "castIntent", slot = "w", x = 100, y = 100 })
-    session:onMessage(1, { type = "castIntent", slot = "r", x = 100, y = 100 })
+    session:onMessage(1, { type = "castIntent", slot = "x", x = 100, y = 100 })
 
     assertEqual(#session:getState().abilities, 0)
 end)
@@ -859,7 +887,7 @@ test("client snapshot reconciles ability, health, and cooldown", function()
             { slot = "player1", x = 25, y = 25, hp = 85, cooldowns = { q = 0, w = 3.5, e = 0 }, stunned = false, stunRemaining = 0 },
         },
         abilities = {
-            { id = 7, ability = "morganapool", x = 60, y = 25, radius = 60, owner = "player1", remaining = 0.4 },
+            { id = 7, ability = "morganapool", x = 60, y = 25, radius = 60, owner = "player1", remaining = 0.4, phase = "active" },
         },
     })
 
@@ -900,16 +928,38 @@ test("ability registry loads beartrap with its declared properties", function()
     assertEqual(module.duration, 30)
     assertEqual(module.stunDuration, 2)
     assertEqual(module.maxActive, 4)
+    assertEqual(module.castRoot, 0.5)
+    assertEqual(module.cancelable, false)
     assertEqual(module.blockedByObstacles, true)
 end)
 
-test("beam and trap declare their HUD tilemap icon slots", function()
+test("ability registry loads morganastun with its declared properties", function()
+    local module = registry.load("morganastun")
+    assertTrue(module ~= nil, "morganastun module should load")
+    assertEqual(module.name, "Morgana's Stun")
+    assertEqual(module.type, "projectile")
+    assertEqual(module.trigger, "projectile")
+    assertEqual(module.damageModel, "none")
+    assertEqual(module.cooldown, 10)
+    assertEqual(module.damage, 0)
+    assertEqual(module.range, 500)
+    assertEqual(module.speed, 315)
+    assertEqual(module.radius, 14)
+    assertEqual(module.charge, 0.5)
+    assertEqual(module.stunDuration, 2)
+    assertEqual(module.cancelable, true)
+end)
+
+test("abilities declare their HUD tilemap icon slots", function()
     local beam = registry.load("beam")
     local trap = registry.load("beartrap")
+    local stun = registry.load("morganastun")
     assertEqual(beam.icon.col, 0)
     assertEqual(beam.icon.row, 0)
     assertEqual(trap.icon.col, 1)
     assertEqual(trap.icon.row, 0)
+    assertEqual(stun.icon.col, 2)
+    assertEqual(stun.icon.row, 0)
 end)
 
 ----------------------------------------
@@ -1009,6 +1059,195 @@ test("beam passes through obstacles", function()
 
     assertEqual(game:getHealth("player2"), 50, "beam should hit through the obstacle")
     assertEqual(game:getHealth("player1"), 100, "beam must not damage the caster")
+end)
+
+----------------------------------------
+-- Game: windup retrofit + morganastun
+----------------------------------------
+test("pool windup roots the caster and delays its damage", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+    game:setPosition("player2", 100, 25)
+
+    game:setTarget("player1", 175, 25)
+    game:tick(1 / 30)
+    assertTrue(game:getPlayer("player1").x > 25, "player should start moving before casting")
+
+    game:castAbility("player1", "w", 100, 25)
+    local xAtCast = game:getPlayer("player1").x
+    local pool = game:getAbilities()[1]
+    assertEqual(pool.abilityId, "morganapool")
+    assertEqual(pool.phase, "charging")
+
+    for _ = 1, 14 do game:tick(1 / 30) end -- ~0.47s, still charging
+    assertNear(game:getPlayer("player1").x, xAtCast, 0.001, "caster rooted during pool windup")
+    assertEqual(game:getHealth("player2"), 100, "pool deals no damage during windup")
+
+    for _ = 1, 12 do game:tick(1 / 30) end -- windup done + ~0.4s active
+    assertTrue(game:getHealth("player2") < 100, "pool should deal damage after the windup")
+    assertTrue(game:getPlayer("player1").x > xAtCast, "caster resumes moving after the windup")
+end)
+
+test("stun during pool windup cancels the cast and refunds the cooldown", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:castAbility("player1", "e", 150, 25) -- trap away from the caster
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    game:castAbility("player1", "w", 100, 25)
+    assertEqual(game:getCooldowns("player1").w, 6, "pool cooldown starts at cast")
+
+    game:setPosition("player1", 150, 25)
+    game:tick(1 / 30)
+
+    assertTrue(game:isStunned("player1"), "caster should be stunned by the armed trap")
+    assertEqual(game:getCooldowns("player1").w, 0, "stun should refund the pool cooldown")
+
+    local pools = 0
+    for _, ability in ipairs(game:getAbilities()) do
+        if ability.type == "pool" then pools = pools + 1 end
+    end
+    assertEqual(pools, 0, "interrupted pool should be cancelled")
+end)
+
+test("trap roots the caster for 0.5s while arming on its 0.75s delay", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:setTarget("player1", 175, 25)
+    game:tick(1 / 30)
+    assertTrue(game:getPlayer("player1").x > 25, "player should start moving before casting")
+
+    game:castAbility("player1", "e", 25, 175) -- off the movement path
+    local xAtCast = game:getPlayer("player1").x
+    local trap = game:getAbilities()[1]
+    assertEqual(trap.abilityId, "beartrap")
+    assertEqual(trap.armed, false)
+
+    for _ = 1, 14 do game:tick(1 / 30) end -- ~0.47s
+    assertNear(game:getPlayer("player1").x, xAtCast, 0.001, "caster rooted during the trap cast")
+    assertEqual(trap.armed, false, "trap still arming during the root")
+
+    for _ = 1, 6 do game:tick(1 / 30) end -- ~0.67s total
+    assertTrue(game:getPlayer("player1").x > xAtCast, "caster moves again after the 0.5s root")
+    assertEqual(trap.armed, false, "trap still arming at 0.67s")
+
+    for _ = 1, 6 do game:tick(1 / 30) end -- ~0.87s total
+    assertEqual(trap.armed, true, "trap arms at 0.75s")
+end)
+
+test("stun during the trap root does not refund or remove the placed trap", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:castAbility("player1", "e", 150, 25) -- trap A away from the caster
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    game:setCooldowns("player1", { q = 0, w = 0, e = 0, r = 0 })
+    game:castAbility("player1", "e", 25, 25) -- trap B at the caster's feet (roots 0.5s)
+    assertEqual(game:getCooldowns("player1").e, 6, "trap cooldown starts at cast")
+
+    game:setPosition("player1", 150, 25)
+    game:tick(1 / 30) -- trap A triggers and stuns the caster during trap B's root
+
+    assertTrue(game:isStunned("player1"))
+    assertTrue(game:getCooldowns("player1").e > 0, "trap cooldown must NOT be refunded")
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 1, "the placed trap B stays down")
+end)
+
+test("morganastun windup roots the caster, then the projectile stuns the enemy", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+    game:setPosition("player2", 150, 25)
+
+    game:setTarget("player1", 175, 25)
+    game:tick(1 / 30)
+    assertTrue(game:getPlayer("player1").x > 25, "player should start moving before casting")
+
+    game:castAbility("player1", "r", 500, 25)
+    local xAtCast = game:getPlayer("player1").x
+    local ability = game:getAbilities()[1]
+    assertEqual(ability.abilityId, "morganastun")
+    assertEqual(ability.phase, "charging")
+
+    for _ = 1, 14 do game:tick(1 / 30) end -- ~0.47s, still charging
+    assertNear(game:getPlayer("player1").x, xAtCast, 0.001, "caster rooted during the windup")
+    assertEqual(game:isStunned("player2"), false, "no hit during the windup")
+
+    for _ = 1, 20 do game:tick(1 / 30) end -- windup + flight
+    assertTrue(game:isStunned("player2"), "projectile should stun the first enemy it reaches")
+    assertEqual(game:isStunned("player1"), false, "projectile must never hit its caster")
+    assertEqual(game:getHealth("player2"), 100, "morganastun deals no damage")
+    assertEqual(#game:getAbilities(), 0, "projectile despawns on hit")
+end)
+
+test("morganastun projectile despawns after its full range", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:castAbility("player1", "r", 500, 25)
+
+    -- Windup (~0.5s) + full flight (500px at 315px/s ~1.59s) is ~2.1s total.
+    for _ = 1, 70 do game:tick(1 / 30) end
+    assertEqual(#game:getAbilities(), 0, "projectile should despawn after covering its full range")
+end)
+
+test("morganastun projectile passes over obstacles", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+    game:setPosition("player1", 25, 100)
+    game:setPosition("player2", 175, 100)
+
+    game:castAbility("player1", "r", 500, 100) -- horizontal shot crossing the obstacle
+    for _ = 1, 40 do game:tick(1 / 30) end
+
+    assertTrue(game:isStunned("player2"), "projectile should cross the obstacle and hit")
+    assertEqual(game:isStunned("player1"), false, "projectile must never hit its caster")
+end)
+
+test("stun during morganastun windup cancels the cast and refunds the cooldown", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:castAbility("player1", "e", 150, 25)
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    game:castAbility("player1", "r", 500, 25)
+    assertEqual(game:getCooldowns("player1").r, 10, "morganastun cooldown starts at cast")
+
+    game:setPosition("player1", 150, 25)
+    game:tick(1 / 30)
+
+    assertTrue(game:isStunned("player1"))
+    assertEqual(game:getCooldowns("player1").r, 0, "stun refunds the morganastun cooldown")
+
+    local projectiles = 0
+    for _, ability in ipairs(game:getAbilities()) do
+        if ability.type == "projectile" then projectiles = projectiles + 1 end
+    end
+    assertEqual(projectiles, 0, "interrupted morganastun should be cancelled")
+end)
+
+test("morganastun projectile simulation is deterministic across two games", function()
+    local function simulate()
+        local game = Game.new(makeConfig())
+        game:spawnPlayer("player1")
+        game:spawnPlayer("player2")
+        game:setPosition("player2", 150, 25)
+        game:castAbility("player1", "r", 500, 25)
+        for _ = 1, 30 do game:tick(1 / 30) end
+        return game:isStunned("player2"), game:getStunRemaining("player2"), #game:getAbilities()
+    end
+
+    local s1, r1, c1 = simulate()
+    local s2, r2, c2 = simulate()
+    assertEqual(s1, s2, "deterministic stun state")
+    assertEqual(r1, r2, "deterministic stun remaining")
+    assertEqual(c1, c2, "deterministic ability count")
 end)
 
 ----------------------------------------
@@ -1132,6 +1371,7 @@ test("stun blocks casting", function()
     assertEqual(game:castAbility("player1", "w", 100, 100), nil, "stunned player cannot cast pool")
     assertEqual(game:castAbility("player1", "q", 200, 25), nil, "stunned player cannot cast beam")
     assertEqual(game:castAbility("player1", "e", 100, 100), nil, "stunned player cannot place a trap")
+    assertEqual(game:castAbility("player1", "r", 500, 25), nil, "stunned player cannot cast morganastun")
 end)
 
 test("trap expires after its duration", function()
@@ -1261,6 +1501,54 @@ test("server ignores cast intents from a stunned player", function()
     assertEqual(#session:getState().abilities, 0, "stunned player's cast intent should be ignored")
 end)
 
+test("server castIntent accepts the r slot and spawns a charging morganastun", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "r", x = 500, y = 25 })
+    session:tick(1 / 30)
+
+    local abilities = session:getState().abilities
+    assertEqual(#abilities, 1)
+    assertEqual(abilities[1].ability, "morganastun")
+    assertEqual(abilities[1].owner, "player1")
+    assertEqual(abilities[1].phase, "charging")
+    assertNear(abilities[1].directionX, 1, 0.001, "morganastun should aim toward the click")
+    assertNear(abilities[1].directionY, 0, 0.001)
+end)
+
+test("snapshots carry the r cooldown and projectile state", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:onConnect(2)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "r", x = 500, y = 25 })
+    session:tick(1 / 30)
+
+    local snapshot
+    for _, entry in ipairs(session:drainOutbox()) do
+        if entry.message.type == "snapshot" then snapshot = entry.message end
+    end
+    assertTrue(snapshot ~= nil, "expected a snapshot")
+
+    local p1
+    for _, p in ipairs(snapshot.players) do
+        if p.slot == "player1" then p1 = p end
+    end
+    assertTrue(p1 ~= nil)
+    assertTrue(p1.cooldowns.r > 0, "r cooldown should be reflected in the snapshot")
+
+    local stunFound = false
+    for _, ability in ipairs(snapshot.abilities) do
+        if ability.ability == "morganastun" and ability.phase == "charging" then
+            stunFound = true
+        end
+    end
+    assertTrue(stunFound, "snapshot should carry the charging morganastun")
+end)
+
 ----------------------------------------
 -- Client: beam/trap/stun prediction and reconciliation
 ----------------------------------------
@@ -1357,6 +1645,48 @@ test("client reflects a remote player's stun from snapshots", function()
     local remote = session:getState().players.player2
     assertTrue(remote ~= nil, "remote player should be rendered")
     assertTrue(remote.stunned, "remote stun should be reflected")
+end)
+
+test("client predicts the r cast and reconciles the projectile", function()
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", {
+        type = "welcome",
+        slot = "player1",
+        loadout = { q = "beam", w = "morganapool", e = "beartrap", r = "morganastun" },
+    })
+    session:drainOutbox()
+
+    session:localCastIntent("r", 500, 25)
+
+    local outbox = session:drainOutbox()
+    assertEqual(#outbox, 1)
+    assertEqual(outbox[1].message.type, "castIntent")
+    assertEqual(outbox[1].message.slot, "r")
+
+    local state = session:getState()
+    assertEqual(#state.abilities, 1, "predicted morganastun should appear immediately")
+    assertEqual(state.abilities[1].ability, "morganastun")
+    assertEqual(state.abilities[1].phase, "charging")
+    assertTrue(state.cooldowns.r > 0, "local r cooldown should start immediately")
+
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 1,
+        players = {
+            { slot = "player1", x = 25, y = 25, hp = 100, cooldowns = { q = 0, w = 0, e = 0, r = 9.5 }, stunned = false, stunRemaining = 0 },
+        },
+        abilities = {
+            { id = 3, ability = "morganastun", owner = "player1", x = 25, y = 25, remaining = 0.3, directionX = 1, directionY = 0, phase = "charging", traveled = 0 },
+        },
+    })
+
+    state = session:getState()
+    assertEqual(#state.abilities, 1)
+    assertEqual(state.abilities[1].id, 3)
+    assertEqual(state.abilities[1].phase, "charging")
+    assertNear(state.abilities[1].directionX, 1, 0.001)
+    assertNear(state.cooldowns.r, 9.5, 0.001)
 end)
 
 ----------------------------------------

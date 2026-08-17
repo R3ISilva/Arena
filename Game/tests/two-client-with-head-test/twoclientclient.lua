@@ -9,7 +9,8 @@
 -- The outer launcher (scripts/twoclientwin.sh) starts two of these, reads both
 -- result files, and asserts: both players move to each other and duel, both
 -- receive snapshots, zero reconciliation snaps (no rubber-banding), pools/beams/
--- traps are placed, stuns are observed, and at least one player's health reaches 0.
+-- traps are placed, Morgana's Stun is fired as a long-range projectile, stuns are
+-- observed, and at least one player's health reaches 0.
 --
 -- Run via main.lua flag:  --twoclientwin:child <1|2> --out <abs_dir> [--duration <sec>]
 
@@ -93,8 +94,8 @@ return function(args)
     local stats = {
         snaps = 0, samples = 0, maxDivergence = 0,
         moved = false, gotSnapshot = false,
-        castsW = 0, castsQ = 0, castsE = 0,
-        sawPool = false, sawBeam = false, sawTrap = false, sawStun = false,
+        castsW = 0, castsQ = 0, castsE = 0, castsR = 0,
+        sawPool = false, sawBeam = false, sawTrap = false, sawMorgaStun = false, sawStun = false,
         tookDamage = false,
         minHp = 100, reachZero = false,
     }
@@ -112,10 +113,18 @@ return function(args)
     local CAST_RETRY = 3.0          -- seconds between cast attempts (cooldown gates the rest)
     local ENGAGE_DIST = 170         -- within this px of the opponent, stop converging & start dueling
 
+    -- Morgana's Stun (R) is a full-range skillshot, so it is fired only after the
+    -- players pull apart to opposite sides of the arena. That makes the projectile's
+    -- flight across the arena visible instead of a near-instant close-range tap.
+    local R_RETREAT_X = { player1 = 175, player2 = 625 }
+    local R_RETREAT_Y = 300
+    local R_RANGE_MIN = 420         -- fire R once the players are at least this far apart
+
     local duelState = "converging"  -- "converging" -> "dueling"
     local orbitAngle = math.random() * (math.pi * 2)
-    local castSlots = { "w", "q", "e" } -- rotate through all three abilities
+    local castSlots = { "w", "q", "e", "r" } -- rotate through all four abilities
     local castIndex = 1
+    local preparingR = false        -- retreating to fire R from long range
     local nextClickOffset = 1.0
     local nextCastOffset = 2.0
     local autoDriving = false
@@ -237,9 +246,11 @@ return function(args)
             "casts_w=" .. tostring(stats.castsW),
             "casts_q=" .. tostring(stats.castsQ),
             "casts_e=" .. tostring(stats.castsE),
+            "casts_r=" .. tostring(stats.castsR),
             "saw_pool=" .. tostring(stats.sawPool),
             "saw_beam=" .. tostring(stats.sawBeam),
             "saw_trap=" .. tostring(stats.sawTrap),
+            "saw_morgastun=" .. tostring(stats.sawMorgaStun),
             "saw_stun=" .. tostring(stats.sawStun),
             "took_damage=" .. tostring(stats.tookDamage),
             "min_hp=" .. string.format("%.0f", stats.minHp),
@@ -339,11 +350,14 @@ return function(args)
 
             if elapsed >= nextClickOffset then
                 if opponent then
-                    if duelState == "converging" then
+                    if preparingR then
+                        -- Pull away to a far spot so the R projectile's travel is visible.
+                        session:localMoveIntent(R_RETREAT_X[ownSlot], R_RETREAT_Y)
+                    elseif duelState == "converging" then
                         -- Walk straight at the opponent to close the engagement gap.
                         session:localMoveIntent(opponent.x, opponent.y)
                     else
-                        -- Orbit on a ~150px radius around the opponent so we stay
+                        -- Orbit on a ~90px radius around the opponent so we stay
                         -- within pool range while still visibly moving between casts.
                         orbitAngle = orbitAngle + ORBIT_STEP
                         local tx = opponent.x + math.cos(orbitAngle) * ORBIT_RADIUS
@@ -358,23 +372,37 @@ return function(args)
                 nextClickOffset = elapsed + ORBIT_TICK
             end
 
-            -- Rotate through W (pool), Q (beam), and E (trap), all aimed at the
-            -- opponent's current position; each slot's cooldown gates how often
-            -- that ability actually lands.
+            -- Rotate through W (pool), Q (beam), E (trap), and R (Morgana's Stun).
+            -- W/Q/E are aimed at the opponent from close range. R first pulls the
+            -- players far apart, then fires only once they are far enough apart for
+            -- the projectile's flight to be visible.
             if elapsed >= nextCastOffset and opponent then
                 local slot = castSlots[castIndex]
-                local landed = session:localCastIntent(slot, opponent.x, opponent.y)
-                if landed then
-                    if slot == "w" then
-                        stats.castsW = stats.castsW + 1
-                    elseif slot == "q" then
-                        stats.castsQ = stats.castsQ + 1
-                    else
-                        stats.castsE = stats.castsE + 1
+                if slot == "r" then
+                    preparingR = true
+                    if distToOpponent >= R_RANGE_MIN then
+                        local landed = session:localCastIntent("r", opponent.x, opponent.y)
+                        if landed then
+                            stats.castsR = stats.castsR + 1
+                        end
+                        castIndex = (castIndex % #castSlots) + 1
+                        nextCastOffset = elapsed + CAST_RETRY
+                        preparingR = false
                     end
+                else
+                    local landed = session:localCastIntent(slot, opponent.x, opponent.y)
+                    if landed then
+                        if slot == "w" then
+                            stats.castsW = stats.castsW + 1
+                        elseif slot == "q" then
+                            stats.castsQ = stats.castsQ + 1
+                        elseif slot == "e" then
+                            stats.castsE = stats.castsE + 1
+                        end
+                    end
+                    castIndex = (castIndex % #castSlots) + 1
+                    nextCastOffset = elapsed + CAST_RETRY
                 end
-                castIndex = (castIndex % #castSlots) + 1
-                nextCastOffset = elapsed + CAST_RETRY
             end
 
             if lp and (spawnX ~= nil) and (lp.x ~= spawnX or lp.y ~= spawnY) then
@@ -388,6 +416,8 @@ return function(args)
                     stats.sawBeam = true
                 elseif ability.abilityId == "beartrap" then
                     stats.sawTrap = true
+                elseif ability.abilityId == "morganastun" then
+                    stats.sawMorgaStun = true
                 end
             end
             for _, player in pairs(state.players or {}) do

@@ -17,7 +17,7 @@ local Game = {}
 Game.__index = Game
 
 local INITIAL_HEALTH = 100
-local DEFAULT_LOADOUT = { q = "beam", w = "morganapool", e = "beartrap" }
+local DEFAULT_LOADOUT = { q = "beam", w = "morganapool", e = "beartrap", r = "morganastun" }
 
 local function clamp(value, lo, hi)
     return math.max(lo, math.min(hi, value))
@@ -31,8 +31,8 @@ function Game.new(config)
     self.walkSpeed = config.player.walkSpeed
     self.players = {}       -- slot -> { x, y, path, target }
     self.health = {}        -- slot -> number (display-only, floored at 0)
-    self.loadouts = {}      -- slot -> { q, w, e } ability ids (server-owned)
-    self.cooldowns = {}     -- slot -> { q, w, e } remaining seconds
+    self.loadouts = {}      -- slot -> { q, w, e, r } ability ids (server-owned)
+    self.cooldowns = {}     -- slot -> { q, w, e, r } remaining seconds
     self.stun = {}          -- slot -> remaining stun seconds
     self.abilities = {}     -- list of active ability instances
     self.nextAbilityId = 1
@@ -49,8 +49,8 @@ function Game:spawnPlayer(slot)
     local spawn = self.world.spawnPoints[spawnIndex]
     self.players[slot] = { x = spawn.x, y = spawn.y, path = {}, target = nil }
     self.health[slot] = INITIAL_HEALTH
-    self.loadouts[slot] = { q = DEFAULT_LOADOUT.q, w = DEFAULT_LOADOUT.w, e = DEFAULT_LOADOUT.e }
-    self.cooldowns[slot] = { q = 0, w = 0, e = 0 }
+    self.loadouts[slot] = { q = DEFAULT_LOADOUT.q, w = DEFAULT_LOADOUT.w, e = DEFAULT_LOADOUT.e, r = DEFAULT_LOADOUT.r }
+    self.cooldowns[slot] = { q = 0, w = 0, e = 0, r = 0 }
     self.stun[slot] = nil
 end
 
@@ -203,7 +203,7 @@ function Game:setLoadout(slot, loadout)
     if not loadout then
         return
     end
-    self.loadouts[slot] = { q = loadout.q, w = loadout.w, e = loadout.e }
+    self.loadouts[slot] = { q = loadout.q, w = loadout.w, e = loadout.e, r = loadout.r }
 end
 
 function Game:setCooldowns(slot, cooldowns)
@@ -214,6 +214,7 @@ function Game:setCooldowns(slot, cooldowns)
     current.q = cooldowns.q or 0
     current.w = cooldowns.w or 0
     current.e = cooldowns.e or 0
+    current.r = cooldowns.r or 0
 end
 
 ----------------------------------------
@@ -245,22 +246,24 @@ function Game:setStun(slot, stunned, remaining)
     end
 end
 
--- A stun landing during a beam windup cancels the cast and refunds its cooldown.
-function Game:cancelBeamCharge(slot)
-    for i = #self.abilities, 1, -1 do
-        local ability = self.abilities[i]
-        if ability.owner == slot and ability.type == "beam" and ability.phase == "charging" then
-            table.remove(self.abilities, i)
-        end
-    end
-
+-- A stun landing during a cancelable charging ability's windup cancels the cast
+-- and refunds its cooldown (Beam, Pool, and morganastun). Bear Trap is not
+-- cancelable: its placement is committed at cast.
+function Game:cancelChargingAbilities(slot)
     local loadout = self.loadouts[slot]
     local cooldowns = self.cooldowns[slot]
-    if loadout and cooldowns then
-        for key, id in pairs(loadout) do
-            if id == "beam" then
-                cooldowns[key] = 0
-                break
+
+    for i = #self.abilities, 1, -1 do
+        local ability = self.abilities[i]
+        if ability.owner == slot and ability.cancelable and ability.phase == "charging" then
+            table.remove(self.abilities, i)
+            if loadout and cooldowns then
+                for key, id in pairs(loadout) do
+                    if id == ability.abilityId then
+                        cooldowns[key] = 0
+                        break
+                    end
+                end
             end
         end
     end
@@ -312,16 +315,13 @@ function Game:tick(dt)
         end
     end
 
-    -- Advance per-slot cooldowns toward zero.
+    -- Advance per-slot cooldowns toward zero (data-driven: q/w/e/r and any
+    -- future slots).
     for _, cooldowns in pairs(self.cooldowns) do
-        if cooldowns.q > 0 then
-            cooldowns.q = math.max(0, cooldowns.q - dt)
-        end
-        if cooldowns.w > 0 then
-            cooldowns.w = math.max(0, cooldowns.w - dt)
-        end
-        if cooldowns.e > 0 then
-            cooldowns.e = math.max(0, cooldowns.e - dt)
+        for key, remaining in pairs(cooldowns) do
+            if remaining > 0 then
+                cooldowns[key] = math.max(0, remaining - dt)
+            end
         end
     end
 
@@ -379,9 +379,41 @@ function Game:tick(dt)
         end
     end
 
-    -- A stun that landed during a beam windup cancels the cast and refunds it.
+    -- Projectile triggers (morganastun): advance along the direction at fixed
+    -- speed, then stop on the first non-caster player it overlaps, stunning them.
+    -- It ignores obstacles and despawns after covering its full range.
+    for _, ability in ipairs(self.abilities) do
+        if ability.trigger == "projectile" and ability.active and ability.phase == "flying" then
+            local step = ability.speed * dt
+            ability.x = ability.x + ability.directionX * step
+            ability.y = ability.y + ability.directionY * step
+            ability.traveled = (ability.traveled or 0) + step
+
+            if ability.traveled >= ability.range then
+                ability.active = false
+            else
+                local reach = ability.radius + playerRadius
+                local reachSq = reach * reach
+                for slot, player in pairs(self.players) do
+                    if slot ~= ability.owner then
+                        local px = player.x - ability.x
+                        local py = player.y - ability.y
+                        if px * px + py * py <= reachSq then
+                            self:applyStun(slot, ability.stunDuration)
+                            newlyStunned[slot] = true
+                            ability.active = false
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- A stun that landed during a cancelable windup cancels the cast and refunds
+    -- the cooldown.
     for slot in pairs(newlyStunned) do
-        self:cancelBeamCharge(slot)
+        self:cancelChargingAbilities(slot)
     end
 
     -- Remove expired/consumed abilities.

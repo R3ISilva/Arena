@@ -150,7 +150,7 @@ function Session:onMessage(peerId, message)
                 return
             end
             local slot = message.slot
-            if slot ~= "q" and slot ~= "w" and slot ~= "e" then
+            if slot ~= "q" and slot ~= "w" and slot ~= "e" and slot ~= "r" then
                 return
             end
             local x, y = message.x, message.y
@@ -319,7 +319,7 @@ function Session:emitSnapshot()
                 x = position.x,
                 y = position.y,
                 hp = position.hp,
-                cooldowns = cooldowns and { q = cooldowns.q, w = cooldowns.w, e = cooldowns.e } or nil,
+                cooldowns = cooldowns and { q = cooldowns.q, w = cooldowns.w, e = cooldowns.e, r = cooldowns.r } or nil,
                 stunned = position.stunned,
                 stunRemaining = position.stunRemaining,
             })

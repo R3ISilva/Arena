@@ -110,12 +110,16 @@ casts_q1=$(read_kv "$OUT_DIR/client1.txt" casts_q)
 casts_q2=$(read_kv "$OUT_DIR/client2.txt" casts_q)
 casts_e1=$(read_kv "$OUT_DIR/client1.txt" casts_e)
 casts_e2=$(read_kv "$OUT_DIR/client2.txt" casts_e)
+casts_r1=$(read_kv "$OUT_DIR/client1.txt" casts_r)
+casts_r2=$(read_kv "$OUT_DIR/client2.txt" casts_r)
 saw_pool1=$(read_kv "$OUT_DIR/client1.txt" saw_pool)
 saw_pool2=$(read_kv "$OUT_DIR/client2.txt" saw_pool)
 saw_beam1=$(read_kv "$OUT_DIR/client1.txt" saw_beam)
 saw_beam2=$(read_kv "$OUT_DIR/client2.txt" saw_beam)
 saw_trap1=$(read_kv "$OUT_DIR/client1.txt" saw_trap)
 saw_trap2=$(read_kv "$OUT_DIR/client2.txt" saw_trap)
+saw_morgastun1=$(read_kv "$OUT_DIR/client1.txt" saw_morgastun)
+saw_morgastun2=$(read_kv "$OUT_DIR/client2.txt" saw_morgastun)
 saw_stun1=$(read_kv "$OUT_DIR/client1.txt" saw_stun)
 saw_stun2=$(read_kv "$OUT_DIR/client2.txt" saw_stun)
 took_damage1=$(read_kv "$OUT_DIR/client1.txt" took_damage)
@@ -131,11 +135,11 @@ for id in 1 2; do
     div=$(read_kv "$f" max_divergence)
     rtt=$(read_kv "$f" rtt_ms)
     if [[ "$id" == "1" ]]; then
-        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_cw=$casts_w1; s_cq=$casts_q1; s_ce=$casts_e1; s_pool=$saw_pool1; s_beam=$saw_beam1; s_trap=$saw_trap1; s_stun=$saw_stun1; s_dmg=$took_damage1; s_zero=$reach_zero1; s_minhp=$min_hp1
+        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_cw=$casts_w1; s_cq=$casts_q1; s_ce=$casts_e1; s_cr=$casts_r1; s_pool=$saw_pool1; s_beam=$saw_beam1; s_trap=$saw_trap1; s_morgastun=$saw_morgastun1; s_stun=$saw_stun1; s_dmg=$took_damage1; s_zero=$reach_zero1; s_minhp=$min_hp1
     else
-        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_cw=$casts_w2; s_cq=$casts_q2; s_ce=$casts_e2; s_pool=$saw_pool2; s_beam=$saw_beam2; s_trap=$saw_trap2; s_stun=$saw_stun2; s_dmg=$took_damage2; s_zero=$reach_zero2; s_minhp=$min_hp2
+        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_cw=$casts_w2; s_cq=$casts_q2; s_ce=$casts_e2; s_cr=$casts_r2; s_pool=$saw_pool2; s_beam=$saw_beam2; s_trap=$saw_trap2; s_morgastun=$saw_morgastun2; s_stun=$saw_stun2; s_dmg=$took_damage2; s_zero=$reach_zero2; s_minhp=$min_hp2
     fi
-    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved castW=$s_cw castQ=$s_cq castE=$s_ce saw_pool=$s_pool saw_beam=$s_beam saw_trap=$s_trap saw_stun=$s_stun took_damage=$s_dmg min_hp=${s_minhp} reach_zero=$s_zero"
+    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved castW=$s_cw castQ=$s_cq castE=$s_ce castR=$s_cr saw_pool=$s_pool saw_beam=$s_beam saw_trap=$s_trap saw_morgastun=$s_morgastun saw_stun=$s_stun took_damage=$s_dmg min_hp=${s_minhp} reach_zero=$s_zero"
 done
 
 echo "duel outcome: min_hp1=$min_hp1 min_hp2=$min_hp2 reach_zero1=$reach_zero1 reach_zero2=$reach_zero2"
@@ -147,9 +151,11 @@ healthy=1
 [[ "$casts_w1" -gt 0 && "$casts_w2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast a pool"; }
 [[ "$casts_q1" -gt 0 && "$casts_q2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast a beam"; }
 [[ "$casts_e1" -gt 0 && "$casts_e2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not place a trap"; }
+[[ "$casts_r1" -gt 0 && "$casts_r2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast a stun"; }
 [[ "$saw_pool1" == "true" && "$saw_pool2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a pool"; }
 [[ "$saw_beam1" == "true" && "$saw_beam2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a beam"; }
 [[ "$saw_trap1" == "true" && "$saw_trap2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a trap"; }
+[[ "$saw_morgastun1" == "true" && "$saw_morgastun2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a stun projectile"; }
 [[ "$saw_stun1" == "true" && "$saw_stun2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never observed a stun"; }
 [[ "$took_damage1" == "true" && "$took_damage2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never took damage"; }
 if [[ "$reach_zero1" == "true" || "$reach_zero2" == "true" || "$min_hp1" == "0" || "$min_hp2" == "0" ]]; then

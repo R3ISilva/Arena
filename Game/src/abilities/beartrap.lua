@@ -1,10 +1,12 @@
 -- Bear Trap: a placeable, single-use crowd-control trap.
 --
 -- On cast a trap is placed at the clicked spot (clamped to range, through
--- obstacles). It takes 0.75s to arm, then lingers for 30s. The first time a
--- non-stunned player overlaps an armed trap it is consumed and that player is
--- stunned for 2s (no damage). A player may have up to 4 live traps; placing a
--- 5th removes the oldest. The 6s cooldown starts on cast.
+-- obstacles) and the caster is rooted for 0.5s while it arms. The trap itself
+-- takes 0.75s to arm, then lingers for 30s. The first time a non-stunned player
+-- overlaps an armed trap it is consumed and that player is stunned for 2s (no
+-- damage). A player may have up to 4 live traps; placing a 5th removes the
+-- oldest. The 6s cooldown starts on cast. Placement is committed at cast, so a
+-- stun during the 0.5s root does not refund the cooldown or remove the trap.
 --
 -- Static tuning lives here so engine code never needs to change to rebalance.
 
@@ -24,7 +26,9 @@ Trap.radius = 20               -- trigger radius in pixels
 Trap.armDelay = 0.75           -- seconds until armed
 Trap.duration = 30             -- seconds an armed trap lingers
 Trap.stunDuration = 2          -- seconds of stun applied on trigger
+Trap.castRoot = 0.5            -- seconds the caster is rooted after placing
 Trap.maxActive = 4             -- per-owner cap of live traps
+Trap.cancelable = false        -- placement is committed at cast (not refunded)
 Trap.blockedByObstacles = true -- placement center must not be inside an obstacle
 Trap.icon = { col = 1, row = 0 } -- HUD tile in abilities_tilemap.png (top-middle)
 
@@ -36,17 +40,22 @@ function Trap.new(owner, x, y, remaining)
     self.remaining = remaining or Trap.duration
     self.armed = false
     self.armRemaining = Trap.armDelay
+    self.castRootRemaining = Trap.castRoot
     self.active = true
     return self
 end
 
--- Instant placement; the arming delay begins immediately.
+-- Instant placement; the arming delay and caster root begin immediately.
 function Trap:cast(caster, x, y)
 end
 
--- Advance the arming and expiry timers. No damage; the trigger is handled by the
--- simulation using the "overlap" trigger contract.
+-- Advance the caster root, arming, and expiry timers. No damage; the trigger is
+-- handled by the simulation using the "overlap" trigger contract.
 function Trap:update(dt)
+    if self.castRootRemaining > 0 then
+        self.castRootRemaining = math.max(0, self.castRootRemaining - dt)
+    end
+
     if not self.armed then
         self.armRemaining = self.armRemaining - dt
         if self.armRemaining <= 0 then
@@ -63,22 +72,25 @@ function Trap:update(dt)
     return {}
 end
 
+-- Rooting: the caster cannot move for the first 0.5s after placing the trap.
 function Trap:isRooting()
-    return false
+    return self.castRootRemaining > 0
 end
 
--- Type-specific snapshot fields (armed state + arming timer).
+-- Type-specific snapshot fields (armed state + arming timer + caster root).
 function Trap:getSnapshot()
     return {
         radius = Trap.radius,
         armed = self.armed,
         armRemaining = self.armRemaining,
+        castRootRemaining = self.castRootRemaining,
     }
 end
 
 function Trap:applySnapshot(entry)
     self.armed = not not entry.armed
     self.armRemaining = entry.armRemaining or 0
+    self.castRootRemaining = entry.castRootRemaining or 0
 end
 
 -- Rendering: arming traps pulse dimly, armed traps are solid.

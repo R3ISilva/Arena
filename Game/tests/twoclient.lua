@@ -1,11 +1,12 @@
 -- Headless two-client diagnostic. Connects two real ENet clients to the configured
--- server, has both players click-to-move repeatedly AND cast all three loadout
--- abilities (Morgana's Pool on W, Beam on Q, Bear Trap on E), and reports each
--- client's RTT, predicted-vs-authoritative divergence, reconciliation snap count,
--- and ability telemetry (casts sent, abilities seen, damage taken, stuns seen).
--- A healthy run shows both players moving with zero snaps (no rubber-banding),
--- both casting every slot, seeing pools/beams/traps, taking damage, and observing
--- a stun (each client self-triggers its own trap while standing still).
+-- server, has both players click-to-move repeatedly AND cast all four loadout
+-- abilities (Morgana's Pool on W, Beam on Q, Bear Trap on E, Morgana's Stun on R),
+-- and reports each client's RTT, predicted-vs-authoritative divergence,
+-- reconciliation snap count, and ability telemetry (casts sent, abilities seen,
+-- damage taken, stuns seen). A healthy run shows both players moving with zero
+-- snaps (no rubber-banding), both casting every slot, seeing pools/beams/traps/
+-- projectiles, taking damage, and observing a stun (each client self-triggers its
+-- own trap while standing still).
 -- Run via: lovec.exe . --twoclient   (exit code 0 = healthy, 1 = unhealthy)
 
 local json = require("json")
@@ -52,6 +53,7 @@ local function observe(session, stats)
         if ability.ability == "morganapool" then stats.sawPool = true end
         if ability.ability == "beam" then stats.sawBeam = true end
         if ability.ability == "beartrap" then stats.sawTrap = true end
+        if ability.ability == "morganastun" then stats.sawMorgaStun = true end
     end
     for _, player in pairs(state.players or {}) do
         if player.stunned then stats.sawStun = true end
@@ -60,8 +62,8 @@ end
 
 local function newCastStats()
     return {
-        sentW = 0, sentQ = 0, sentE = 0,
-        sawPool = false, sawBeam = false, sawTrap = false, sawStun = false,
+        sentW = 0, sentQ = 0, sentE = 0, sentR = 0,
+        sawPool = false, sawBeam = false, sawTrap = false, sawMorgaStun = false, sawStun = false,
         tookDamage = false,
     }
 end
@@ -93,14 +95,17 @@ local function run()
         { x = 740, y = 60 },
         { x = 60, y = 540 },
     }
-    -- Rotate through the three abilities. Pool self-casts damage the caster and
-    -- far casts exercise the range clamp; the beam aims at the opponent; the trap
-    -- drops at the caster's feet and the caster holds still so it arms + triggers.
+    -- Rotate through the four abilities. Pool self-casts damage the caster and
+    -- far casts exercise the range clamp; the beam and stun aim at the opponent;
+    -- the trap drops at the caster's feet and the caster holds still so it arms
+    -- + triggers (self-stunning for ~2s). The stun is cast last so its own
+    -- projectile can't interrupt the trap placement.
     local castPlan = {
         { slot = "w", self = true },
         { slot = "q" },
         { slot = "e" },
         { slot = "w", self = false },
+        { slot = "r" },
     }
 
     local function tryCast(session, stats, plan, otherSlot, now)
@@ -114,6 +119,10 @@ local function run()
         local cx, cy
         if plan.slot == "q" then
             -- Beam: aim in the opponent's direction (direction-based, Lux R feel).
+            cx = opponent and opponent.x or (lp.x + 300)
+            cy = opponent and opponent.y or lp.y
+        elseif plan.slot == "r" then
+            -- Morgana's Stun: direction-based skillshot at the opponent.
             cx = opponent and opponent.x or (lp.x + 300)
             cy = opponent and opponent.y or lp.y
         elseif plan.slot == "e" then
@@ -134,6 +143,8 @@ local function run()
                 stats.sentQ = stats.sentQ + 1
             elseif plan.slot == "e" then
                 stats.sentE = stats.sentE + 1
+            elseif plan.slot == "r" then
+                stats.sentR = stats.sentR + 1
             end
         end
     end
@@ -195,12 +206,12 @@ local function run()
 
     local function report(name, session, stats, cast)
         print(string.format(
-            "%s: slot=%s rtt=%.0fms divergence=%.1fpx snaps=%d snapshots=%d castW=%d castQ=%d castE=%d sawPool=%s sawBeam=%s sawTrap=%s sawStun=%s tookDamage=%s hp=%.0f",
+            "%s: slot=%s rtt=%.0fms divergence=%.1fpx snaps=%d snapshots=%d castW=%d castQ=%d castE=%d castR=%d sawPool=%s sawBeam=%s sawTrap=%s sawMorgaStun=%s sawStun=%s tookDamage=%s hp=%.0f",
             name, tostring(session:getSlot()), (session.latency or 0) * 1000,
             stats.maxDivergence, stats.snaps, stats.samples,
-            cast.sentW, cast.sentQ, cast.sentE,
+            cast.sentW, cast.sentQ, cast.sentE, cast.sentR,
             tostring(cast.sawPool), tostring(cast.sawBeam), tostring(cast.sawTrap),
-            tostring(cast.sawStun), tostring(cast.tookDamage),
+            tostring(cast.sawMorgaStun), tostring(cast.sawStun), tostring(cast.tookDamage),
             (session:getState().health or 100)))
     end
     report("client1", session1, stats1, castStats1)
@@ -214,9 +225,11 @@ local function run()
         and castStats1.sentW > 0 and castStats2.sentW > 0
         and castStats1.sentQ > 0 and castStats2.sentQ > 0
         and castStats1.sentE > 0 and castStats2.sentE > 0
+        and castStats1.sentR > 0 and castStats2.sentR > 0
         and castStats1.sawPool and castStats2.sawPool
         and castStats1.sawBeam and castStats2.sawBeam
         and castStats1.sawTrap and castStats2.sawTrap
+        and castStats1.sawMorgaStun and castStats2.sawMorgaStun
         and castStats1.sawStun and castStats2.sawStun
         and castStats1.tookDamage and castStats2.tookDamage
 
