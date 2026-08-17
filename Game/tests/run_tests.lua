@@ -903,6 +903,15 @@ test("ability registry loads beartrap with its declared properties", function()
     assertEqual(module.blockedByObstacles, true)
 end)
 
+test("beam and trap declare their HUD tilemap icon slots", function()
+    local beam = registry.load("beam")
+    local trap = registry.load("beartrap")
+    assertEqual(beam.icon.col, 0)
+    assertEqual(beam.icon.row, 0)
+    assertEqual(trap.icon.col, 1)
+    assertEqual(trap.icon.row, 0)
+end)
+
 ----------------------------------------
 -- Game: beam simulation
 ----------------------------------------

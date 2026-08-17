@@ -26,6 +26,7 @@ Trap.duration = 30             -- seconds an armed trap lingers
 Trap.stunDuration = 2          -- seconds of stun applied on trigger
 Trap.maxActive = 4             -- per-owner cap of live traps
 Trap.blockedByObstacles = true -- placement center must not be inside an obstacle
+Trap.icon = { col = 1, row = 0 } -- HUD tile in abilities_tilemap.png (top-middle)
 
 function Trap.new(owner, x, y, remaining)
     local self = setmetatable({}, Trap)
