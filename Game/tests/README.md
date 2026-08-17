@@ -68,16 +68,20 @@ Bar: both `snaps=0`, exit 0.
 
 This self-contained folder holds the launcher (`twoclientwin.sh`) and the
 auto-drive client it launches twice (`twoclientclient.lua`). It brings the pick
-up itself, opens **two** GUI windows that auto-drive click-to-move and cast
-Morgana's Pool (rendering the purple pools + overhead health bars), and after
-~12s both windows **close themselves** and the launcher asserts both moved,
-cast, saw pools, and took damage with zero snaps.
+up itself, opens **two** GUI windows that converge, orbit-strafe each other, and
+place Morgana's Pool directly *on each other* (rendering the purple pools +
+overhead health bars that drain to zero), and after ~30s both windows **close
+themselves** and the launcher asserts both moved, cast, saw pools, took damage,
+and that **at least one player reached 0 HP** — all with zero snaps.
 
 ```bash
 bash tests/two-client-with-head-test/twoclientwin.sh            # stops the server after
 bash tests/two-client-with-head-test/twoclientwin.sh --keep     # leaves the server up
 ```
 Bar: `TWO-WINDOW DIAGNOSTIC PASSED`, exit 0.
+
+(Note: this diagnostic wants a real kill — pool duration was raised to 2s so a
+close-range trade drains a player to 0 inside the window.)
 
 Env overrides: `TWOCLIENTWIN_DURATION` (seconds each window runs) and
 `TWOCLIENTWIN_TIMEOUT` (max seconds to wait for both windows to report).

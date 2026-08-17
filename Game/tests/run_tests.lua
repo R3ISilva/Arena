@@ -617,7 +617,7 @@ test("ability registry loads morganapool with its declared properties", function
     assertEqual(module.damage, 30)
     assertEqual(module.range, 200)
     assertEqual(module.radius, 60)
-    assertEqual(module.duration, 1)
+    assertEqual(module.duration, 2)
 end)
 
 ----------------------------------------
@@ -662,11 +662,11 @@ test("pool spawns and expires after its duration", function()
     game:castAbility("player1", "w", 200, 25)
     assertEqual(#game:getAbilities(), 1)
 
-    for _ = 1, 29 do game:tick(1 / 30) end
-    assertEqual(#game:getAbilities(), 1, "pool should still be active just under 1s")
+    for _ = 1, 59 do game:tick(1 / 30) end
+    assertEqual(#game:getAbilities(), 1, "pool should still be active just under 2s")
 
     for _ = 1, 3 do game:tick(1 / 30) end
-    assertEqual(#game:getAbilities(), 0, "pool should expire after 1s")
+    assertEqual(#game:getAbilities(), 0, "pool should expire after 2s")
 end)
 
 test("a player standing in a pool loses health in ticks", function()

@@ -3,12 +3,14 @@
 #
 # Colocated with its companion windowed client (twoclientclient.lua) under
 # tests/two-client-with-head-test/. This launcher drives that client as two real
-# GUI love.exe windows against the pick (the Docker server), auto-drives
-# click-to-move in each, and asserts the same invariants as the headless
-# --twoclient diagnostic:
+# GUI love.exe windows against the pick (the Docker server), auto-drives each into
+# a close-range orbit/strafe duel — both move and place Morgana's Pool on each other —
+# and asserts:
 #   * both clients connect as live players and receive snapshots
 #   * both players actually move
 #   * zero reconciliation snaps (no rubber-banding)
+#   * both place pools and take pool damage
+#   * at least one player's health reaches 0 within the test window
 #
 # Unlike --twoclient (headless lovec.exe), each client is a real windowed process,
 # so you can watch the arena render and the players move, then both windows close
@@ -32,8 +34,8 @@ LOVE_EXE="$LOVE_DIR/love.exe"
 # keep it colocated with this test rather than polluting a pi-specific dir.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$TEST_DIR/.out"
-DURATION="${TWOCLIENTWIN_DURATION:-14}"   # seconds each window runs before self-close
-TIMEOUT="${TWOCLIENTWIN_TIMEOUT:-45}"     # seconds to wait for both windows to report
+DURATION="${TWOCLIENTWIN_DURATION:-30}"   # seconds each window runs before self-close
+TIMEOUT="${TWOCLIENTWIN_TIMEOUT:-60}"     # seconds to wait for both windows to report
 
 KEEP_SERVER=0
 if [[ "${1:-}" == "--keep" ]]; then
@@ -66,8 +68,8 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 echo ">> Starting two windowed clients against 127.0.0.1:27890 ..."
-"$LOVE_EXE" "$GAME_DIR" --twoclientwin:child 1 --id 1 --out "$OUT_DIR" &
-"$LOVE_EXE" "$GAME_DIR" --twoclientwin:child 2 --id 2 --out "$OUT_DIR" &
+"$LOVE_EXE" "$GAME_DIR" --twoclientwin:child 1 --id 1 --duration "$DURATION" --out "$OUT_DIR" &
+"$LOVE_EXE" "$GAME_DIR" --twoclientwin:child 2 --id 2 --duration "$DURATION" --out "$OUT_DIR" &
 
 # --- Wait for both result files (the windows self-close after DURATION) -------
 elapsed=0
@@ -107,6 +109,10 @@ saw_pool1=$(read_kv "$OUT_DIR/client1.txt" saw_pool)
 saw_pool2=$(read_kv "$OUT_DIR/client2.txt" saw_pool)
 took_damage1=$(read_kv "$OUT_DIR/client1.txt" took_damage)
 took_damage2=$(read_kv "$OUT_DIR/client2.txt" took_damage)
+reach_zero1=$(read_kv "$OUT_DIR/client1.txt" reach_zero)
+reach_zero2=$(read_kv "$OUT_DIR/client2.txt" reach_zero)
+min_hp1=$(read_kv "$OUT_DIR/client1.txt" min_hp)
+min_hp2=$(read_kv "$OUT_DIR/client2.txt" min_hp)
 
 for id in 1 2; do
     f="$OUT_DIR/client$id.txt"
@@ -114,12 +120,14 @@ for id in 1 2; do
     div=$(read_kv "$f" max_divergence)
     rtt=$(read_kv "$f" rtt_ms)
     if [[ "$id" == "1" ]]; then
-        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_casts=$casts1; s_pool=$saw_pool1; s_dmg=$took_damage1
+        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_casts=$casts1; s_pool=$saw_pool1; s_dmg=$took_damage1; s_zero=$reach_zero1; s_minhp=$min_hp1
     else
-        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_casts=$casts2; s_pool=$saw_pool2; s_dmg=$took_damage2
+        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_casts=$casts2; s_pool=$saw_pool2; s_dmg=$took_damage2; s_zero=$reach_zero2; s_minhp=$min_hp2
     fi
-    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved casts=$s_casts saw_pool=$s_pool took_damage=$s_dmg"
+    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved casts=$s_casts saw_pool=$s_pool took_damage=$s_dmg min_hp=${s_minhp} reach_zero=$s_zero"
 done
+
+echo "duel outcome: min_hp1=$min_hp1 min_hp2=$min_hp2 reach_zero1=$reach_zero1 reach_zero2=$reach_zero2"
 
 healthy=1
 [[ "$moved1" == "true" && "$moved2" == "true" ]] || { healthy=0; echo ">> FAIL: a client did not move"; }
@@ -128,10 +136,15 @@ healthy=1
 [[ "$casts1" -gt 0 && "$casts2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast"; }
 [[ "$saw_pool1" == "true" && "$saw_pool2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a pool"; }
 [[ "$took_damage1" == "true" && "$took_damage2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never took pool damage"; }
+if [[ "$reach_zero1" == "true" || "$reach_zero2" == "true" || "$min_hp1" == "0" || "$min_hp2" == "0" ]]; then
+    echo ">> a player reached 0 HP (combat resolved)"
+else
+    healthy=0; echo ">> FAIL: no player reached 0 HP within ${DURATION}s"
+fi
 
 echo
 if [[ $healthy -eq 1 ]]; then
-    echo "TWO-WINDOW DIAGNOSTIC PASSED: both players moved, zero reconciliation snaps (no rubber-banding)"
+    echo "TWO-WINDOW DIAGNOSTIC PASSED: one player reached 0 HP, both dueled, zero reconciliation snaps (no rubber-banding)"
 else
     echo "TWO-WINDOW DIAGNOSTIC FAILED"
 fi

@@ -7,11 +7,11 @@
 -- window (love.event.quit).
 --
 -- The outer launcher (scripts/twoclientwin.sh) starts two of these, reads both
--- result files, and asserts the same invariants as the headless --twoclient
--- diagnostic: both players move, both receive snapshots, zero reconciliation snaps
--- (no rubber-banding).
+-- result files, and asserts: both players move to each other and duel, both
+-- receive snapshots, zero reconciliation snaps (no rubber-banding), pools are
+-- placed on each other, and at least one player's health reaches 0.
 --
--- Run via main.lua flag:  --twoclientwin:child <1|2> --out <abs_dir>
+-- Run via main.lua flag:  --twoclientwin:child <1|2> --out <abs_dir> [--duration <sec>]
 
 local json = require("json")
 local Game = require("src.game")
@@ -74,7 +74,7 @@ end
 return function(args)
     local id = parseNumber(argValue(args, "--id"), 1)
     local outDir = argValue(args, "--out") or "."
-    local DURATION = 12 -- test window in seconds
+    local DURATION = parseNumber(argValue(args, "--duration"), 30) -- test window in seconds
 
     local text = love.filesystem.read("config.json")
     local config = json.decode(text)
@@ -94,21 +94,24 @@ return function(args)
         snaps = 0, samples = 0, maxDivergence = 0,
         moved = false, gotSnapshot = false,
         casts = 0, sawPool = false, tookDamage = false,
+        minHp = 100, reachZero = false,
     }
     instrument(session, stats)
 
-    local targets = {
-        { x = 60, y = 60 },
-        { x = 740, y = 540 },
-        { x = 740, y = 60 },
-        { x = 60, y = 540 },
-    }
-    local castTargets = {
-        { kind = "self" },
-        { kind = "far", dx = 500, dy = 500 },
-    }
-    local clickIndex = 1
-    local castIndex = 1
+    -- Duel constants. Players converge, then orbit-strafe each other while
+    -- placing Morgana's Pool directly on their opponent (range 200). The pool
+    -- lasts 2s against a 6s cooldown, so a sustained trade drains a player to 0
+    -- HP well inside the test window. The orbit is sized so the strafe speed is
+    -- low enough that the target stays inside a pool's effect radius (~60px) for
+    -- most of its 2s life, so each landed pool delivers most of its damage.
+    local ORBIT_RADIUS = 90         -- keep this close: well within pool range, tight enough to stay in the effect radius
+    local ORBIT_STEP = math.rad(15) -- degrees of orbit swept per move tick (slow strafe)
+    local ORBIT_TICK = 1.2          -- seconds between orbit re-targets
+    local CAST_RETRY = 3.0          -- seconds between cast attempts (cooldown gates the rest)
+    local ENGAGE_DIST = 170         -- within this px of the opponent, stop converging & start dueling
+
+    local duelState = "converging"  -- "converging" -> "dueling"
+    local orbitAngle = math.random() * (math.pi * 2)
     local nextClickOffset = 1.0
     local nextCastOffset = 2.0
     local autoDriving = false
@@ -218,6 +221,8 @@ return function(args)
             "casts=" .. tostring(stats.casts),
             "saw_pool=" .. tostring(stats.sawPool),
             "took_damage=" .. tostring(stats.tookDamage),
+            "min_hp=" .. string.format("%.0f", stats.minHp),
+            "reach_zero=" .. tostring(stats.reachZero),
         }
         local handle = io.open(path, "w")
         if handle then
@@ -283,35 +288,68 @@ return function(args)
 
         if autoDriving then
             local elapsed = love.timer.getTime() - startTime
-            if elapsed >= nextClickOffset then
-                session:localMoveIntent(targets[clickIndex].x, targets[clickIndex].y)
-                clickIndex = (clickIndex % #targets) + 1
-                nextClickOffset = elapsed + 2.0
-            end
-
-            if elapsed >= nextCastOffset then
-                local lp = session.localPlayer
-                if lp then
-                    local target = castTargets[castIndex]
-                    local cx = (target.kind == "far") and (lp.x + target.dx) or lp.x
-                    local cy = (target.kind == "far") and (lp.y + target.dy) or lp.y
-                    if session:localCastIntent("w", cx, cy) then
-                        stats.casts = stats.casts + 1
-                    end
-                end
-                castIndex = (castIndex % #castTargets) + 1
-                nextCastOffset = elapsed + 2.0
-            end
-
             local lp = session.localPlayer
+            local ownSlot = session:getSlot()
+            local otherSlot = (ownSlot == "player1") and "player2" or "player1"
+            local state = session:getState()
+            local opponent = state.players[otherSlot]
+
+            if lp and opponent then
+                -- Track duel severity from this client's view: min hp across both
+                -- players, and whether either reached 0.
+                stats.minHp = math.min(stats.minHp, state.health or 100)
+                stats.minHp = math.min(stats.minHp, opponent.hp or 100)
+                if stats.minHp <= 0 then
+                    stats.reachZero = true
+                end
+                if state.health and state.health < 100 then
+                    stats.tookDamage = true
+                end
+            end
+
+            local dx = (opponent and opponent.x or lp.x) - lp.x
+            local dy = (opponent and opponent.y or lp.y) - lp.y
+            local distToOpponent = math.sqrt(dx * dx + dy * dy)
+
+            -- Phase 1: CONVERGE toward the opponent. Phase 2: ORBIT/STRAFE duel.
+            if duelState == "converging" and opponent and distToOpponent <= ENGAGE_DIST then
+                duelState = "dueling"
+            end
+
+            if elapsed >= nextClickOffset then
+                if opponent then
+                    if duelState == "converging" then
+                        -- Walk straight at the opponent to close the engagement gap.
+                        session:localMoveIntent(opponent.x, opponent.y)
+                    else
+                        -- Orbit on a ~150px radius around the opponent so we stay
+                        -- within pool range while still visibly moving between casts.
+                        orbitAngle = orbitAngle + ORBIT_STEP
+                        local tx = opponent.x + math.cos(orbitAngle) * ORBIT_RADIUS
+                        local ty = opponent.y + math.sin(orbitAngle) * ORBIT_RADIUS
+                        session:localMoveIntent(tx, ty)
+                    end
+                else
+                    -- Opponent not visible yet: converge on the arena center so the
+                    -- two windows reliably meet.
+                    session:localMoveIntent(WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2)
+                end
+                nextClickOffset = elapsed + ORBIT_TICK
+            end
+
+            -- Place a pool directly under the opponent's current position every
+            -- retry interval; the pool cooldown gates how often one actually lands.
+            if elapsed >= nextCastOffset and opponent then
+                if session:localCastIntent("w", opponent.x, opponent.y) then
+                    stats.casts = stats.casts + 1
+                end
+                nextCastOffset = elapsed + CAST_RETRY
+            end
+
             if lp and (spawnX ~= nil) and (lp.x ~= spawnX or lp.y ~= spawnY) then
                 stats.moved = true
             end
 
-            local state = session:getState()
-            if state.health and state.health < 100 then
-                stats.tookDamage = true
-            end
             if #game:getAbilities() > 0 then
                 stats.sawPool = true
             end
