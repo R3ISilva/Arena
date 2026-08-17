@@ -20,16 +20,18 @@ Exit codes: `0` = pass, `1` = fail.
 
 ## 1. `--test` — headless session suite (**run_tests.lua**)
 
-The main automated suite: 18 unit/integration tests over the transport-agnostic
+The main automated suite: 40 unit/integration tests over the transport-agnostic
 `session` module — no network needed. Covers slot assignment, spawn points,
 server movement authority, snapshot emission/sequencing, disconnect recovery,
-client prediction/validation, reconciliation vs RTT, remote interpolation, and
-spectator behavior.
+client prediction/validation, reconciliation vs RTT, remote interpolation,
+spectator behavior, and the server-authoritative ability system (registry,
+cast clamp-to-range, cooldown enforcement, pool lifecycle/damage ticks, health
+floor, loadout resolution, cast intent handling, and client prediction of casts).
 
 ```bash
 "C:/Program Files/LOVE/lovec.exe" . --test
 ```
-Bar: `18 passed, 0 failed` / `ALL TESTS PASSED`, exit 0.
+Bar: `40 passed, 0 failed` / `ALL TESTS PASSED`, exit 0.
 
 ## 2. `--probe` — live connectivity probe (**probe.lua**)
 
@@ -45,9 +47,11 @@ Bar: `PROBE PASSED`.
 ## 3. `--twoclient` — headless two-client diagnostic (**twoclient.lua**)
 
 Two real ENet clients (no windows) connect to the pick, both click-to-move across
-the arena for ~15s, and each reports RTT, predicted-vs-authoritative divergence,
-and reconciliation snap count. A healthy run shows **zero snaps** (no
-rubber-banding).
+the arena and cast Morgana's Pool (self-casts to take damage + far casts to
+exercise the range clamp) for ~15s. Each reports RTT, predicted-vs-authoritative
+divergence, reconciliation snap count, and ability telemetry (casts sent, pools
+seen, damage taken). A healthy run shows **zero snaps** (no rubber-banding) with
+both clients casting, seeing pools, and taking damage.
 
 ```bash
 "C:/Program Files/LOVE/lovec.exe" . --twoclient
@@ -64,9 +68,10 @@ Bar: both `snaps=0`, exit 0.
 
 This self-contained folder holds the launcher (`twoclientwin.sh`) and the
 auto-drive client it launches twice (`twoclientclient.lua`). It brings the pick
-up itself, opens **two** GUI windows that auto-drive click-to-move, and after
-~12s both windows **close themselves** and the launcher asserts both moved +
-zero snaps.
+up itself, opens **two** GUI windows that auto-drive click-to-move and cast
+Morgana's Pool (rendering the purple pools + overhead health bars), and after
+~12s both windows **close themselves** and the launcher asserts both moved,
+cast, saw pools, and took damage with zero snaps.
 
 ```bash
 bash tests/two-client-with-head-test/twoclientwin.sh            # stops the server after

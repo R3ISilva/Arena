@@ -15,23 +15,47 @@ function World.new(config)
     self.columns = math.floor(self.windowWidth / self.cellSize)
     self.rows = math.floor(self.windowHeight / self.cellSize)
     self.obstacles = config.obstacles
+
+    -- Precompute a sparse bitmap of blocked cells (center strictly inside an
+    -- obstacle). Obstacles are static, so this is built once and gives the A*
+    -- hot loop O(1) walkability instead of re-testing every obstacle per cell.
+    self.blocked = {}
+    local obstacles = self.obstacles
+    for row = 0, self.rows - 1 do
+        for col = 0, self.columns - 1 do
+            local centerX = col * self.cellSize + self.cellSize / 2
+            local centerY = row * self.cellSize + self.cellSize / 2
+            for i = 1, #obstacles do
+                local obstacle = obstacles[i]
+                if centerX > obstacle.x and centerX < obstacle.x + obstacle.width
+                    and centerY > obstacle.y and centerY < obstacle.y + obstacle.height then
+                    self.blocked[row * self.columns + col] = true
+                    break
+                end
+            end
+        end
+    end
     self.walkSpeed = config.player.walkSpeed
     self.radius = config.player.radius
     self.spawnPoints = config.player.spawnPoints
+
+    -- Persistent scratch space for A* pathfinding: one slot per cell, reused
+    -- across calls. Plain arrays indexed by cell index are much faster than hash
+    -- tables on the dense grid, and a monotonically increasing search id marks
+    -- valid entries so nothing needs clearing between searches.
+    self.searchId = 0
+    self.gStamp = {}      -- gStamp[i] == searchId => gCost[i] is valid
+    self.gCost = {}
+    self.parentStamp = {} -- parentStamp[i] == searchId => parent[i] is valid
+    self.parent = {}
+    self.openCosts = {}   -- binary heap of open cells (fCost / cell index)
+    self.openIndices = {}
     return self
 end
 
 ----------------------------------------
 -- Grid <-> world coordinates
 ----------------------------------------
-function World:gridIndex(col, row)
-    return row * self.columns + col
-end
-
-function World:indexToCell(index)
-    return index % self.columns, math.floor(index / self.columns)
-end
-
 function World:worldToCell(x, y)
     return math.floor(x / self.cellSize), math.floor(y / self.cellSize)
 end
@@ -40,133 +64,170 @@ function World:cellCenter(col, row)
     return col * self.cellSize + self.cellSize / 2, row * self.cellSize + self.cellSize / 2
 end
 
-function World:waypoint(col, row)
-    local x, y = self:cellCenter(col, row)
-    return { x = x, y = y }
-end
-
-function World:pointIsInsideObstacle(x, y)
-    for _, obstacle in ipairs(self.obstacles) do
-        if x > obstacle.x and x < obstacle.x + obstacle.width
-            and y > obstacle.y and y < obstacle.y + obstacle.height then
-            return true
-        end
-    end
-    return false
-end
-
 function World:cellIsWalkable(col, row)
     if col < 0 or col >= self.columns or row < 0 or row >= self.rows then
         return false
     end
-    local centerX, centerY = self:cellCenter(col, row)
-    return not self:pointIsInsideObstacle(centerX, centerY)
+    return not self.blocked[row * self.columns + col]
 end
 
 ----------------------------------------
 -- Deterministic A* pathfinding
 ----------------------------------------
--- Eight-directional neighbors. Orthogonal steps cost 1, diagonal steps cost
--- sqrt(2) so straight lines are preferred while diagonals remain available.
-function World:neighboringCells(col, row)
-    return {
-        { col + 1, row, 1 },
-        { col - 1, row, 1 },
-        { col, row + 1, 1 },
-        { col, row - 1, 1 },
-        { col + 1, row + 1, DIAGONAL_COST },
-        { col + 1, row - 1, DIAGONAL_COST },
-        { col - 1, row + 1, DIAGONAL_COST },
-        { col - 1, row - 1, DIAGONAL_COST },
-    }
-end
+-- Eight-directional neighbor offsets. Orthogonal steps cost 1, diagonal steps
+-- cost sqrt(2) so straight lines are preferred while diagonals remain available.
+local NEIGHBOR_OFFSETS = {
+    { 1, 0, 1 }, { -1, 0, 1 }, { 0, 1, 1 }, { 0, -1, 1 },
+    { 1, 1, DIAGONAL_COST }, { 1, -1, DIAGONAL_COST }, { -1, 1, DIAGONAL_COST }, { -1, -1, DIAGONAL_COST },
+}
 
 -- Octile distance: the exact shortest path cost on an open 8-connected grid.
 -- Admissible and consistent with the orthogonal/diagonal step costs above.
-function World:octileDistance(col, row, goalCol, goalRow)
+-- Pure module function (no self); the World:octileDistance method wraps it.
+local function octileDistance(col, row, goalCol, goalRow)
     local dx = math.abs(col - goalCol)
     local dy = math.abs(row - goalRow)
     return (dx + dy) + (DIAGONAL_COST - 2) * math.min(dx, dy)
 end
 
--- A diagonal step must not cut through a blocked corner: both adjacent
--- orthogonal cells have to be walkable.
-function World:diagonalIsWalkable(col, row, nextCol, nextRow)
-    local dCol = nextCol - col
-    local dRow = nextRow - row
-    if dCol == 0 or dRow == 0 then
-        return true
-    end
-    return self:cellIsWalkable(col + dCol, row) and self:cellIsWalkable(col, row + dRow)
-end
-
-function World:reconstructPath(cameFrom, startIndex, goalIndex)
-    local path = {}
-    local current = goalIndex
-    while current ~= startIndex do
-        local col, row = self:indexToCell(current)
-        table.insert(path, 1, self:waypoint(col, row))
-        current = cameFrom[current]
-    end
-    local startCol, startRow = self:indexToCell(startIndex)
-    table.insert(path, 1, self:waypoint(startCol, startRow))
-    return path
+function World:octileDistance(col, row, goalCol, goalRow)
+    return octileDistance(col, row, goalCol, goalRow)
 end
 
 function World:findPath(startX, startY, goalX, goalY)
+    local columns = self.columns
+    local rows = self.rows
+    local cellSize = self.cellSize
+
     local startCol, startRow = self:worldToCell(startX, startY)
     local goalCol, goalRow = self:worldToCell(goalX, goalY)
 
-    if not self:cellIsWalkable(startCol, startRow) or not self:cellIsWalkable(goalCol, goalRow) then
+    -- Fast walkability check via the precomputed blocked-cell bitmap.
+    local blocked = self.blocked
+    local function isWalkable(col, row)
+        if col < 0 or col >= columns or row < 0 or row >= rows then
+            return false
+        end
+        return not blocked[row * columns + col]
+    end
+
+    if not isWalkable(startCol, startRow) or not isWalkable(goalCol, goalRow) then
         return {}
     end
 
-    local startIndex = self:gridIndex(startCol, startRow)
-    local goalIndex = self:gridIndex(goalCol, goalRow)
+    local startIndex = startRow * columns + startCol
+    local goalIndex = goalRow * columns + goalCol
 
-    local open = { { index = startIndex, col = startCol, row = startRow } }
-    local inOpen = { [startIndex] = true }
-    local cameFrom = {}
-    local costSoFar = { [startIndex] = 0 }
+    -- Reused scratch arrays (allocated once in World.new). A per-search id marks
+    -- valid entries, so nothing needs clearing between searches.
+    local searchId = self.searchId + 1
+    self.searchId = searchId
+    local gStamp, gCost = self.gStamp, self.gCost
+    local parentStamp, parent = self.parentStamp, self.parent
+    local openCosts, openIndices = self.openCosts, self.openIndices
 
-    local function estimatedCost(col, row)
-        return costSoFar[self:gridIndex(col, row)] + self:octileDistance(col, row, goalCol, goalRow)
+    gStamp[startIndex] = searchId
+    gCost[startIndex] = 0
+
+    -- Binary min-heap of (fCost, cellIndex) pairs with an explicit size counter,
+    -- so the arrays are reused without clearing. Ordering breaks ties on the
+    -- unique cell index, keeping every search deterministic.
+    local heapSize = 0
+    local function heapPush(cost, index)
+        heapSize = heapSize + 1
+        local n = heapSize
+        while n > 1 do
+            local p = math.floor(n / 2)
+            local pc, pi = openCosts[p], openIndices[p]
+            if cost > pc or (cost == pc and index > pi) then
+                break
+            end
+            openCosts[n], openIndices[n] = pc, pi
+            n = p
+        end
+        openCosts[n], openIndices[n] = cost, index
     end
 
-    while #open > 0 do
-        local current = table.remove(open, 1)
-        inOpen[current.index] = nil
+    local function heapPop()
+        if heapSize == 0 then
+            return nil
+        end
+        local topCost, topIndex = openCosts[1], openIndices[1]
+        local lastCost, lastIndex = openCosts[heapSize], openIndices[heapSize]
+        openCosts[heapSize], openIndices[heapSize] = nil, nil
+        heapSize = heapSize - 1
+        if heapSize == 0 then
+            return topCost, topIndex
+        end
+        local i = 1
+        while true do
+            local left = i * 2
+            if left > heapSize then
+                break
+            end
+            local right = left + 1
+            local child = left
+            if right <= heapSize then
+                local lc, li = openCosts[left], openIndices[left]
+                local rc, ri = openCosts[right], openIndices[right]
+                if rc < lc or (rc == lc and ri < li) then
+                    child = right
+                end
+            end
+            local cc, ci = openCosts[child], openIndices[child]
+            if lastCost < cc or (lastCost == cc and lastIndex < ci) then
+                break
+            end
+            openCosts[i], openIndices[i] = cc, ci
+            i = child
+        end
+        openCosts[i], openIndices[i] = lastCost, lastIndex
+        return topCost, topIndex
+    end
 
-        if current.index == goalIndex then
-            return self:reconstructPath(cameFrom, startIndex, goalIndex)
+    heapPush(octileDistance(startCol, startRow, goalCol, goalRow), startIndex)
+
+    while heapSize > 0 do
+        local currentCost, currentIndex = heapPop()
+        local currentCol = currentIndex % columns
+        local currentRow = math.floor(currentIndex / columns)
+
+        if currentIndex == goalIndex then
+            -- Reconstruct the start..goal waypoint chain from parent links.
+            local path = {}
+            local current = goalIndex
+            while current ~= startIndex do
+                local col = current % columns
+                local row = math.floor(current / columns)
+                table.insert(path, 1, { x = col * cellSize + cellSize / 2, y = row * cellSize + cellSize / 2 })
+                current = parent[current]
+            end
+            table.insert(path, 1, { x = startCol * cellSize + cellSize / 2, y = startRow * cellSize + cellSize / 2 })
+            return path
         end
 
-        for _, neighbor in ipairs(self:neighboringCells(current.col, current.row)) do
-            local nextCol, nextRow, stepCost = neighbor[1], neighbor[2], neighbor[3]
-            if self:cellIsWalkable(nextCol, nextRow) and self:diagonalIsWalkable(current.col, current.row, nextCol, nextRow) then
-                local nextIndex = self:gridIndex(nextCol, nextRow)
-                local tentativeCost = costSoFar[current.index] + stepCost
-                if tentativeCost < (costSoFar[nextIndex] or math.huge) then
-                    cameFrom[nextIndex] = current.index
-                    costSoFar[nextIndex] = tentativeCost
-                    if not inOpen[nextIndex] then
-                        table.insert(open, { index = nextIndex, col = nextCol, row = nextRow })
-                        inOpen[nextIndex] = true
+        -- Lazy deletion: skip stale entries whose cell got a cheaper g after push.
+        if currentCost <= gCost[currentIndex] + octileDistance(currentCol, currentRow, goalCol, goalRow) then
+            for _, offset in ipairs(NEIGHBOR_OFFSETS) do
+                local dCol, dRow, stepCost = offset[1], offset[2], offset[3]
+                local nextCol = currentCol + dCol
+                local nextRow = currentRow + dRow
+                -- Corner-cut rule: a diagonal step also needs both adjacent
+                -- orthogonal cells to be walkable.
+                if isWalkable(nextCol, nextRow) and (dCol == 0 or dRow == 0
+                    or (isWalkable(currentCol + dCol, currentRow) and isWalkable(currentCol, currentRow + dRow))) then
+                    local nextIndex = nextRow * columns + nextCol
+                    local tentativeCost = gCost[currentIndex] + stepCost
+                    if gStamp[nextIndex] ~= searchId or tentativeCost < gCost[nextIndex] then
+                        parent[nextIndex] = currentIndex
+                        parentStamp[nextIndex] = searchId
+                        gCost[nextIndex] = tentativeCost
+                        gStamp[nextIndex] = searchId
+                        heapPush(tentativeCost + octileDistance(nextCol, nextRow, goalCol, goalRow), nextIndex)
                     end
                 end
             end
         end
-
-        -- A sorted array acts as a simple priority queue. Tie-breaking on the unique
-        -- cell index keeps the sort total and therefore deterministic across runs.
-        table.sort(open, function(a, b)
-            local costA = estimatedCost(a.col, a.row)
-            local costB = estimatedCost(b.col, b.row)
-            if costA ~= costB then
-                return costA < costB
-            end
-            return a.index < b.index
-        end)
     end
 
     return {}

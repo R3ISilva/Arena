@@ -90,7 +90,11 @@ return function(args)
     local PLAYER_RADIUS = config.player.radius
     local obstacles = config.obstacles
 
-    local stats = { snaps = 0, samples = 0, maxDivergence = 0, moved = false, gotSnapshot = false }
+    local stats = {
+        snaps = 0, samples = 0, maxDivergence = 0,
+        moved = false, gotSnapshot = false,
+        casts = 0, sawPool = false, tookDamage = false,
+    }
     instrument(session, stats)
 
     local targets = {
@@ -99,8 +103,14 @@ return function(args)
         { x = 740, y = 60 },
         { x = 60, y = 540 },
     }
+    local castTargets = {
+        { kind = "self" },
+        { kind = "far", dx = 500, dy = 500 },
+    }
     local clickIndex = 1
+    local castIndex = 1
     local nextClickOffset = 1.0
+    local nextCastOffset = 2.0
     local autoDriving = false
     local startTime = 0
     local spawnX, spawnY = nil, nil
@@ -136,12 +146,21 @@ return function(args)
 
     local function drawPath(path)
         applyColor(COLORS.path)
-        for i = 1, #path do
-            local point = path[i]
-            love.graphics.circle("fill", point.x, point.y, 3)
-            local nextPoint = path[i + 1]
-            if nextPoint then
-                love.graphics.line(point.x, point.y, nextPoint.x, nextPoint.y)
+        if CELL_SIZE < 10 then
+            -- Dense grid: waypoints are only a few pixels apart, so dots would
+            -- overlap into a blob. Draw the polyline only.
+            for i = 1, #path - 1 do
+                local a, b = path[i], path[i + 1]
+                love.graphics.line(a.x, a.y, b.x, b.y)
+            end
+        else
+            for i = 1, #path do
+                local point = path[i]
+                love.graphics.circle("fill", point.x, point.y, 3)
+                local nextPoint = path[i + 1]
+                if nextPoint then
+                    love.graphics.line(point.x, point.y, nextPoint.x, nextPoint.y)
+                end
             end
         end
     end
@@ -160,6 +179,28 @@ return function(args)
         return COLORS.player2Fill, COLORS.player2Outline
     end
 
+    local function drawPools()
+        for _, ability in ipairs(game:getAbilities()) do
+            ability:draw(COLORS)
+        end
+    end
+
+    local function drawHealthBar(x, y, width, height, hp, maxHp)
+        applyColor(COLORS.healthBack)
+        love.graphics.rectangle("fill", x, y, width, height)
+        local ratio = math.max(0, math.min(1, hp / maxHp))
+        if ratio > 0 then
+            applyColor(COLORS.healthFill)
+            love.graphics.rectangle("fill", x, y, width * ratio, height)
+        end
+        applyColor(COLORS.hudText)
+        love.graphics.rectangle("line", x, y, width, height)
+    end
+
+    local function drawOverheadHealth(x, y, hp)
+        drawHealthBar(x - 22, y - PLAYER_RADIUS - 10, 44, 6, hp, 100)
+    end
+
     ----------------------------------------
     -- Result reporting + teardown
     ----------------------------------------
@@ -174,6 +215,9 @@ return function(args)
             "samples=" .. tostring(stats.samples),
             "max_divergence=" .. string.format("%.1f", stats.maxDivergence),
             "got_snapshot=" .. tostring(stats.gotSnapshot),
+            "casts=" .. tostring(stats.casts),
+            "saw_pool=" .. tostring(stats.sawPool),
+            "took_damage=" .. tostring(stats.tookDamage),
         }
         local handle = io.open(path, "w")
         if handle then
@@ -234,6 +278,7 @@ return function(args)
             autoDriving = true
             startTime = love.timer.getTime()
             nextClickOffset = 1.0
+            nextCastOffset = 2.0
         end
 
         if autoDriving then
@@ -244,9 +289,31 @@ return function(args)
                 nextClickOffset = elapsed + 2.0
             end
 
+            if elapsed >= nextCastOffset then
+                local lp = session.localPlayer
+                if lp then
+                    local target = castTargets[castIndex]
+                    local cx = (target.kind == "far") and (lp.x + target.dx) or lp.x
+                    local cy = (target.kind == "far") and (lp.y + target.dy) or lp.y
+                    if session:localCastIntent("w", cx, cy) then
+                        stats.casts = stats.casts + 1
+                    end
+                end
+                castIndex = (castIndex % #castTargets) + 1
+                nextCastOffset = elapsed + 2.0
+            end
+
             local lp = session.localPlayer
             if lp and (spawnX ~= nil) and (lp.x ~= spawnX or lp.y ~= spawnY) then
                 stats.moved = true
+            end
+
+            local state = session:getState()
+            if state.health and state.health < 100 then
+                stats.tookDamage = true
+            end
+            if #game:getAbilities() > 0 then
+                stats.sawPool = true
             end
 
             if elapsed >= DURATION then
@@ -267,11 +334,16 @@ return function(args)
             drawPath(session:getLocalPath())
         end
 
+        drawPools()
+
         for _, slot in ipairs({ "player1", "player2" }) do
             local player = state.players[slot]
             if player then
                 local fill, outline = playerColors(slot)
                 drawPlayer(player.x, player.y, fill, outline)
+                if player.hp ~= nil then
+                    drawOverheadHealth(player.x, player.y, player.hp)
+                end
             end
         end
     end

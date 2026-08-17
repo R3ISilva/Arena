@@ -45,6 +45,17 @@ function Test-DockerRunning {
     return $LASTEXITCODE -eq 0
 }
 
+function Test-DockerReady {
+    # `docker info` turns 0 as soon as the Windows named pipe is reachable, but
+    # Docker Desktop's WSL backend can still be initializing its in-distro
+    # /bin/bash for a few seconds. Building during that window trips the WSL
+    # relay: `<3>WSL (..) execvpe(/bin/bash) failed: No such file or directory`.
+    # A cheap, honest readiness probe is `docker version` against the Server: it
+    # only returns 0 once the daemon (and its WSL backend) can actually answer.
+    & docker version --format '{{.Server.Version}}' 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
 # --- Step 1: Docker engine ----------------------------------------------
 Write-Host "== Arena: run one client =="
 if (-not (Test-DockerRunning)) {
@@ -68,6 +79,24 @@ if (-not (Test-DockerRunning)) {
     Write-Host "Docker engine is up."
 } else {
     Write-Host "Docker engine is running."
+}
+
+# The pipe is reachable, but Docker Desktop's WSL backend may still be warming
+# up its /bin/bash. Wait until the daemon can actually answer a Server query so
+# the subsequent docker build does not race the WSL relay. This covers both the
+# freshly-started path above and the already-running (but still-booting) path.
+if (-not (Test-DockerReady)) {
+    Write-Host "Waiting for Docker Desktop's backend to finish starting..."
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-DockerReady) { break }
+        Start-Sleep -Seconds 2
+    }
+    if (-not (Test-DockerReady)) {
+        Write-Error "Docker daemon did not become ready in time. Try starting Docker Desktop manually, then re-run."
+        exit 1
+    }
+    Write-Host "Docker backend is ready."
 }
 
 # --- Step 2: Server (the pick) ------------------------------------------

@@ -77,7 +77,11 @@ function Session:onConnect(peerId)
             self.slots[slot] = peerId
             self.peers[peerId] = { slot = slot }
             self.game:spawnPlayer(slot)
-            self:enqueue(peerId, 0, { type = "welcome", slot = slot })
+            self:enqueue(peerId, 0, {
+                type = "welcome",
+                slot = slot,
+                loadout = self.game:getLoadout(slot),
+            })
             return true
         end
 
@@ -137,6 +141,25 @@ function Session:onMessage(peerId, message)
             end
             -- setTarget clamps to the arena and computes the authoritative path.
             self.game:setTarget(entry.slot, x, y)
+        elseif message.type == "castIntent" then
+            local entry = self.peers[peerId]
+            if not entry or entry.slot == "spectator" then
+                return
+            end
+            if self.slots[entry.slot] ~= peerId then
+                return
+            end
+            local slot = message.slot
+            if slot ~= "q" and slot ~= "w" and slot ~= "e" then
+                return
+            end
+            local x, y = message.x, message.y
+            if type(x) ~= "number" or type(y) ~= "number" then
+                return
+            end
+            -- castAbility resolves the loadout slot, enforces the cooldown, and
+            -- re-clamps the target to the ability's range authoritatively.
+            self.game:castAbility(entry.slot, slot, x, y)
         end
         return
     end
@@ -145,6 +168,9 @@ function Session:onMessage(peerId, message)
         self.slot = message.slot
         if message.slot == "player1" or message.slot == "player2" then
             self.game:spawnPlayer(message.slot)
+            if message.loadout then
+                self.game:setLoadout(message.slot, message.loadout)
+            end
             self.localPlayer = self.game:getPlayerRef(message.slot)
         else
             self.localPlayer = nil
@@ -170,6 +196,28 @@ function Session:localMoveIntent(x, y)
     self:enqueue("server", 1, { type = "moveIntent", x = cx, y = cy })
 end
 
+-- Local cast input: predict the cast (deterministically clamped), start the local
+-- cooldown + spawn the local pool immediately, and queue a cast intent to the
+-- server. The authoritative snapshot reconciles pool/health/cooldown state.
+function Session:localCastIntent(slot, x, y)
+    if self.mode ~= "client" then
+        return
+    end
+    if self.slot ~= "player1" and self.slot ~= "player2" then
+        return
+    end
+    if not self.localPlayer then
+        return
+    end
+
+    local cx, cy = self.game:castAbility(self.slot, slot, x, y)
+    if not cx then
+        return
+    end
+    self:enqueue("server", 1, { type = "castIntent", slot = slot, x = cx, y = cy })
+    return cx, cy
+end
+
 function Session:applySnapshot(message)
     self.lastSeq = message.seq
     local now = self.time
@@ -177,18 +225,24 @@ function Session:applySnapshot(message)
     for _, entry in ipairs(message.players or {}) do
         if entry.slot == self.slot and self.localPlayer then
             self:reconcile(entry.x, entry.y)
+            self.game:setHealth(entry.slot, entry.hp)
+            if entry.cooldowns then
+                self.game:setCooldowns(entry.slot, entry.cooldowns)
+            end
         else
             local buffer = self.remoteBuffers[entry.slot]
             if not buffer then
                 buffer = {}
                 self.remoteBuffers[entry.slot] = buffer
             end
-            table.insert(buffer, { time = now, x = entry.x, y = entry.y })
+            table.insert(buffer, { time = now, x = entry.x, y = entry.y, hp = entry.hp })
             if #buffer > 60 then
                 table.remove(buffer, 1)
             end
         end
     end
+
+    self.game:applySnapshotPools(message.pools)
 end
 
 -- Snap the predicted position to the authoritative one when they diverge, then
@@ -251,11 +305,23 @@ function Session:emitSnapshot()
     for _, slot in ipairs(SLOTS) do
         local position = self.game:getPlayer(slot)
         if position then
-            table.insert(players, { slot = slot, x = position.x, y = position.y })
+            local cooldowns = self.game:getCooldowns(slot)
+            table.insert(players, {
+                slot = slot,
+                x = position.x,
+                y = position.y,
+                hp = position.hp,
+                cooldowns = cooldowns and { q = cooldowns.q, w = cooldowns.w, e = cooldowns.e } or nil,
+            })
         end
     end
 
-    self:enqueue("*", 1, { type = "snapshot", seq = self.seq, players = players })
+    self:enqueue("*", 1, {
+        type = "snapshot",
+        seq = self.seq,
+        players = players,
+        pools = self.game:getPoolsSnapshot(),
+    })
     self.seq = self.seq + 1
 end
 
@@ -265,21 +331,25 @@ function Session:updateInterpolation()
     for slot, buffer in pairs(self.remoteBuffers) do
         if #buffer == 0 then
             self.remoteRendered[slot] = nil
-        elseif #buffer == 1 or targetTime <= buffer[1].time then
-            self.remoteRendered[slot] = { x = buffer[1].x, y = buffer[1].y }
-        elseif targetTime >= buffer[#buffer].time then
-            self.remoteRendered[slot] = { x = buffer[#buffer].x, y = buffer[#buffer].y }
         else
-            for i = 1, #buffer - 1 do
-                local a, b = buffer[i], buffer[i + 1]
-                if targetTime >= a.time and targetTime <= b.time then
-                    local span = math.max(b.time - a.time, 0.000001)
-                    local fraction = (targetTime - a.time) / span
-                    self.remoteRendered[slot] = {
-                        x = a.x + (b.x - a.x) * fraction,
-                        y = a.y + (b.y - a.y) * fraction,
-                    }
-                    break
+            local hp = buffer[#buffer].hp
+            if #buffer == 1 or targetTime <= buffer[1].time then
+                self.remoteRendered[slot] = { x = buffer[1].x, y = buffer[1].y, hp = hp }
+            elseif targetTime >= buffer[#buffer].time then
+                self.remoteRendered[slot] = { x = buffer[#buffer].x, y = buffer[#buffer].y, hp = hp }
+            else
+                for i = 1, #buffer - 1 do
+                    local a, b = buffer[i], buffer[i + 1]
+                    if targetTime >= a.time and targetTime <= b.time then
+                        local span = math.max(b.time - a.time, 0.000001)
+                        local fraction = (targetTime - a.time) / span
+                        self.remoteRendered[slot] = {
+                            x = a.x + (b.x - a.x) * fraction,
+                            y = a.y + (b.y - a.y) * fraction,
+                            hp = hp,
+                        }
+                        break
+                    end
                 end
             end
         end
@@ -304,7 +374,12 @@ end
 ----------------------------------------
 function Session:getState()
     if self.mode == "server" then
-        return { mode = "server", players = self.game:getPlayers(), seq = self.seq }
+        return {
+            mode = "server",
+            players = self.game:getPlayers(),
+            pools = self.game:getPoolsSnapshot(),
+            seq = self.seq,
+        }
     end
 
     local players = {}
@@ -316,11 +391,22 @@ function Session:getState()
         end
     end
 
+    local loadout, cooldowns, health
+    if self.slot == "player1" or self.slot == "player2" then
+        loadout = self.game:getLoadout(self.slot)
+        cooldowns = self.game:getCooldowns(self.slot)
+        health = self.game:getHealth(self.slot)
+    end
+
     return {
         mode = "client",
         slot = self.slot,
         connected = self.connected,
         players = players,
+        pools = self.game:getPoolsSnapshot(),
+        loadout = loadout,
+        cooldowns = cooldowns,
+        health = health,
         lastSeq = self.lastSeq,
     }
 end

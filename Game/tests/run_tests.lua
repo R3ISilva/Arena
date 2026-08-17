@@ -4,6 +4,7 @@
 local World = require("src.world")
 local Game = require("src.game")
 local Session = require("src.session")
+local registry = require("src.abilities.registry")
 
 local tests = {}
 
@@ -217,6 +218,48 @@ test("player walks a long multi-waypoint path without getting stuck", function()
     end
 
     local player = session:getState().players.player1
+    local goalCol, goalRow = world:worldToCell(740, 540)
+    local goalX, goalY = world:cellCenter(goalCol, goalRow)
+    local dx = player.x - goalX
+    local dy = player.y - goalY
+    assertTrue(dx * dx + dy * dy <= 1,
+        string.format("player stuck before goal: (%.1f, %.1f) vs goal (%.1f, %.1f)",
+            player.x, player.y, goalX, goalY))
+end)
+
+test("dense grid: 10x smaller cells pathfind and walk smoothly to the goal", function()
+    -- Regression: with cellSize 2.5 the arena is 320x240 cells (100x more than
+    -- the old 25px grid), which used to make A* take seconds per click. The
+    -- binary-heap open list keeps a full diagonal crossing fast, and the player
+    -- must still arrive exactly at the goal cell center.
+    local config = makeConfig()
+    config.window = { title = "test", width = 800, height = 600 }
+    config.grid.cellSize = 2.5
+    config.player.walkSpeed = 260
+    config.player.spawnPoints = { { x = 100, y = 100 }, { x = 700, y = 500 } }
+    config.obstacles = {
+        { x = 250, y = 150, width = 100, height = 250 },
+        { x = 450, y = 250, width = 150, height = 100 },
+        { x = 150, y = 420, width = 200, height = 60 },
+        { x = 550, y = 80, width = 120, height = 120 },
+    }
+
+    local game = Game.new(config)
+    local world = game.world
+    local session = Session.new(game, "server", config.server)
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "moveIntent", x = 740, y = 540 })
+
+    local player = game:getPlayerRef("player1")
+    assertTrue(#player.path > 100, "dense grid should produce a long waypoint path")
+
+    for _ = 1, 300 do
+        session:tick(1 / 30)
+    end
+
+    player = session:getState().players.player1
     local goalCol, goalRow = world:worldToCell(740, 540)
     local goalX, goalY = world:cellCenter(goalCol, goalRow)
     local dx = player.x - goalX
@@ -560,6 +603,270 @@ test("spectator sees both players but cannot move", function()
     assertEqual(state.slot, "spectator")
     assertNear(state.players.player1.x, 30, 0.001)
     assertNear(state.players.player2.x, 170, 0.001)
+end)
+
+----------------------------------------
+-- Ability registry
+----------------------------------------
+test("ability registry loads morganapool with its declared properties", function()
+    local module = registry.load("morganapool")
+    assertTrue(module ~= nil, "morganapool module should load")
+    assertEqual(module.name, "Morgana's Pool")
+    assertEqual(module.type, "pool")
+    assertEqual(module.cooldown, 6)
+    assertEqual(module.damage, 30)
+    assertEqual(module.range, 200)
+    assertEqual(module.radius, 60)
+    assertEqual(module.duration, 1)
+end)
+
+----------------------------------------
+-- Game: ability simulation (no network)
+----------------------------------------
+test("game castAbility clamps the target to the ability range", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local cx, cy = game:castAbility("player1", "w", 200, 25)
+    assertEqual(cx, 200)
+    assertEqual(cy, 25)
+
+    game:setCooldowns("player1", { q = 0, w = 0, e = 0 })
+
+    local cx2, cy2 = game:castAbility("player1", "w", 25, 425)
+    assertNear(cx2, 25, 0.001)
+    assertNear(cy2, 225, 0.001)
+end)
+
+test("game castAbility rejects a recast during cooldown", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local cx = game:castAbility("player1", "w", 200, 25)
+    assertTrue(cx ~= nil, "first cast should succeed")
+
+    assertEqual(game:castAbility("player1", "w", 100, 100), nil)
+
+    for _ = 1, 177 do game:tick(1 / 30) end -- ~5.9s
+    assertEqual(game:castAbility("player1", "w", 100, 100), nil)
+
+    for _ = 1, 9 do game:tick(1 / 30) end -- ~6.2s total
+    local again = game:castAbility("player1", "w", 100, 100)
+    assertTrue(again ~= nil, "cast should succeed after the cooldown expires")
+end)
+
+test("pool spawns and expires after its duration", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:castAbility("player1", "w", 200, 25)
+    assertEqual(#game:getAbilities(), 1)
+
+    for _ = 1, 29 do game:tick(1 / 30) end
+    assertEqual(#game:getAbilities(), 1, "pool should still be active just under 1s")
+
+    for _ = 1, 3 do game:tick(1 / 30) end
+    assertEqual(#game:getAbilities(), 0, "pool should expire after 1s")
+end)
+
+test("a player standing in a pool loses health in ticks", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:castAbility("player1", "w", 25, 25) -- pool centered on the caster
+
+    assertEqual(game:getHealth("player1"), 100)
+
+    for _ = 1, 8 do game:tick(1 / 30) end -- ~0.27s -> one 0.25s tick
+    assertNear(game:getHealth("player1"), 92.5, 0.01, "one tick = 7.5 damage")
+
+    for _ = 1, 23 do game:tick(1 / 30) end -- ~1.03s total -> four ticks
+    assertNear(game:getHealth("player1"), 70, 0.01, "four ticks = 30 damage")
+end)
+
+test("health never drops below 0", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:setHealth("player1", 3)
+    game:castAbility("player1", "w", 25, 25)
+    for _ = 1, 10 do game:tick(1 / 30) end -- one tick (7.5) exceeds remaining 3
+
+    assertEqual(game:getHealth("player1"), 0)
+end)
+
+test("loadout resolves empty and filled slots", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    assertEqual(game:castAbility("player1", "q", 100, 100), nil)
+    assertEqual(game:castAbility("player1", "e", 100, 100), nil)
+
+    local cx, cy = game:castAbility("player1", "w", 100, 100)
+    assertTrue(cx ~= nil, "w slot should resolve to morganapool")
+    assertEqual(cx, 100)
+    assertEqual(cy, 100)
+end)
+
+----------------------------------------
+-- Server: ability authority
+----------------------------------------
+test("server welcome includes the recipient loadout", function()
+    local session = newServerSession()
+    session:onConnect(1)
+
+    local welcome = session:drainOutbox()[1].message
+    assertEqual(welcome.type, "welcome")
+    assertEqual(welcome.slot, "player1")
+    assertEqual(welcome.loadout.w, "morganapool")
+    assertEqual(welcome.loadout.q, nil)
+    assertEqual(welcome.loadout.e, nil)
+end)
+
+test("server castIntent spawns an authoritative pool", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "w", x = 100, y = 25 })
+    session:tick(1 / 30)
+
+    local pools = session:getState().pools
+    assertEqual(#pools, 1)
+    assertEqual(pools[1].ability, "morganapool")
+    assertEqual(pools[1].owner, "player1")
+    assertEqual(pools[1].x, 100)
+    assertEqual(pools[1].y, 25)
+end)
+
+test("server cooldown blocks a recast", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "w", x = 100, y = 25 })
+    session:onMessage(1, { type = "castIntent", slot = "w", x = 150, y = 25 })
+
+    assertEqual(#session:getState().pools, 1, "recast during cooldown should be ignored")
+end)
+
+test("snapshots include pools, health, and cooldowns", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:onConnect(2)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "w", x = 100, y = 25 })
+    session:tick(1 / 30)
+
+    local snapshot
+    for _, entry in ipairs(session:drainOutbox()) do
+        if entry.message.type == "snapshot" then
+            snapshot = entry.message
+        end
+    end
+
+    assertTrue(snapshot ~= nil, "expected a snapshot")
+    assertEqual(#snapshot.pools, 1)
+    assertEqual(snapshot.pools[1].ability, "morganapool")
+
+    local p1
+    for _, p in ipairs(snapshot.players) do
+        if p.slot == "player1" then
+            p1 = p
+        end
+    end
+    assertTrue(p1 ~= nil)
+    assertEqual(p1.hp, 100)
+    assertTrue(p1.cooldowns.w > 0, "cooldown should be reflected in the snapshot")
+    assertEqual(p1.cooldowns.q, 0)
+    assertEqual(p1.cooldowns.e, 0)
+end)
+
+test("cast intents from spectators and empty slots are ignored", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:onConnect(2)
+    session:onConnect(3) -- spectator
+    session:drainOutbox()
+
+    session:onMessage(3, { type = "castIntent", slot = "w", x = 100, y = 100 })
+    session:onMessage(1, { type = "castIntent", slot = "q", x = 100, y = 100 })
+    session:onMessage(1, { type = "castIntent", slot = "e", x = 100, y = 100 })
+
+    assertEqual(#session:getState().pools, 0)
+end)
+
+test("disconnect cleans up a player's active abilities", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:onConnect(2)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "w", x = 100, y = 25 })
+    assertEqual(#session:getState().pools, 1)
+
+    session:onDisconnect(1)
+    assertEqual(#session:getState().pools, 0)
+end)
+
+----------------------------------------
+-- Client: ability prediction and reconciliation
+----------------------------------------
+test("client cast predicts its pool and cooldown immediately", function()
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", {
+        type = "welcome",
+        slot = "player1",
+        loadout = { q = nil, w = "morganapool", e = nil },
+    })
+    session:drainOutbox()
+
+    session:localCastIntent("w", 100, 25)
+
+    local outbox = session:drainOutbox()
+    assertEqual(#outbox, 1)
+    assertEqual(outbox[1].to, "server")
+    assertEqual(outbox[1].channel, 1)
+    assertEqual(outbox[1].message.type, "castIntent")
+    assertEqual(outbox[1].message.slot, "w")
+    assertEqual(outbox[1].message.x, 100)
+    assertEqual(outbox[1].message.y, 25)
+
+    local state = session:getState()
+    assertEqual(#state.pools, 1, "predicted pool should appear immediately")
+    assertTrue(state.cooldowns.w > 0, "local cooldown should start immediately")
+end)
+
+test("client snapshot reconciles pool, health, and cooldown", function()
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", {
+        type = "welcome",
+        slot = "player1",
+        loadout = { q = nil, w = "morganapool", e = nil },
+    })
+    session:drainOutbox()
+
+    session:localCastIntent("w", 100, 25)
+
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 1,
+        players = {
+            { slot = "player1", x = 25, y = 25, hp = 85, cooldowns = { q = 0, w = 3.5, e = 0 } },
+        },
+        pools = {
+            { id = 7, ability = "morganapool", x = 60, y = 25, radius = 60, owner = "player1", remaining = 0.4 },
+        },
+    })
+
+    local state = session:getState()
+    assertEqual(#state.pools, 1)
+    assertEqual(state.pools[1].id, 7)
+    assertEqual(state.pools[1].x, 60)
+    assertNear(state.cooldowns.w, 3.5, 0.001)
+    assertNear(state.health, 85, 0.001)
 end)
 
 ----------------------------------------

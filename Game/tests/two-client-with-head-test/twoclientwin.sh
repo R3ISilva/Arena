@@ -101,6 +101,12 @@ snaps1=$(read_kv "$OUT_DIR/client1.txt" snaps)
 snaps2=$(read_kv "$OUT_DIR/client2.txt" snaps)
 samples1=$(read_kv "$OUT_DIR/client1.txt" samples)
 samples2=$(read_kv "$OUT_DIR/client2.txt" samples)
+casts1=$(read_kv "$OUT_DIR/client1.txt" casts)
+casts2=$(read_kv "$OUT_DIR/client2.txt" casts)
+saw_pool1=$(read_kv "$OUT_DIR/client1.txt" saw_pool)
+saw_pool2=$(read_kv "$OUT_DIR/client2.txt" saw_pool)
+took_damage1=$(read_kv "$OUT_DIR/client1.txt" took_damage)
+took_damage2=$(read_kv "$OUT_DIR/client2.txt" took_damage)
 
 for id in 1 2; do
     f="$OUT_DIR/client$id.txt"
@@ -108,17 +114,20 @@ for id in 1 2; do
     div=$(read_kv "$f" max_divergence)
     rtt=$(read_kv "$f" rtt_ms)
     if [[ "$id" == "1" ]]; then
-        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1
+        s_moved=$moved1; s_snaps=$snaps1; s_samples=$samples1; s_casts=$casts1; s_pool=$saw_pool1; s_dmg=$took_damage1
     else
-        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2
+        s_moved=$moved2; s_snaps=$snaps2; s_samples=$samples2; s_casts=$casts2; s_pool=$saw_pool2; s_dmg=$took_damage2
     fi
-    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved"
+    echo "client$id: slot=$slot rtt=${rtt}ms divergence=${div}px snaps=$s_snaps snapshots=$s_samples moved=$s_moved casts=$s_casts saw_pool=$s_pool took_damage=$s_dmg"
 done
 
 healthy=1
 [[ "$moved1" == "true" && "$moved2" == "true" ]] || { healthy=0; echo ">> FAIL: a client did not move"; }
 [[ "$snaps1" == "0" && "$snaps2" == "0" ]] || { healthy=0; echo ">> FAIL: a client snapped (rubber-banding)"; }
 [[ "$samples1" -gt 0 && "$samples2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client received no snapshots"; }
+[[ "$casts1" -gt 0 && "$casts2" -gt 0 ]] || { healthy=0; echo ">> FAIL: a client did not cast"; }
+[[ "$saw_pool1" == "true" && "$saw_pool2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never rendered a pool"; }
+[[ "$took_damage1" == "true" && "$took_damage2" == "true" ]] || { healthy=0; echo ">> FAIL: a client never took pool damage"; }
 
 echo
 if [[ $healthy -eq 1 ]]; then

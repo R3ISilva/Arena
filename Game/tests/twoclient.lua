@@ -1,8 +1,10 @@
 -- Headless two-client diagnostic. Connects two real ENet clients to the configured
--- server, has both players click-to-move repeatedly, and reports each client's RTT,
--- predicted-vs-authoritative divergence, and reconciliation snap count. A healthy
--- run shows both players moving with zero snaps (no rubber-banding).
--- Run via: lovec.exe . --twoclient   (exit code 0 = healthy, 1 = snapping detected)
+-- server, has both players click-to-move repeatedly AND cast Morgana's Pool, and
+-- reports each client's RTT, predicted-vs-authoritative divergence, reconciliation
+-- snap count, and ability health/pool telemetry. A healthy run shows both players
+-- moving with zero snaps (no rubber-banding), both casting, both seeing pools in
+-- snapshots, and both taking self-damage from their own pools.
+-- Run via: lovec.exe . --twoclient   (exit code 0 = healthy, 1 = unhealthy)
 
 local json = require("json")
 local Game = require("src.game")
@@ -39,6 +41,16 @@ local function instrument(session)
     return stats
 end
 
+local function observe(session, stats)
+    local state = session:getState()
+    if state.health and state.health < 100 then
+        stats.tookDamage = true
+    end
+    if state.pools and #state.pools > 0 then
+        stats.sawPool = true
+    end
+end
+
 local function run()
     local text = love.filesystem.read("config.json")
     local config = json.decode(text)
@@ -48,17 +60,28 @@ local function run()
     local stats1 = instrument(session1)
     local stats2 = instrument(session2)
 
+    local castStats1 = { sent = 0, sawPool = false, tookDamage = false }
+    local castStats2 = { sent = 0, sawPool = false, tookDamage = false }
+
     local fixedDt = 1 / config.server.tickRate
     local accumulator = 0
     local lastTime = love.timer.getTime()
     local deadline = lastTime + 15
     local nextClickAt = lastTime + 0.5
+    local nextCastAt = lastTime + 1.0
     local clickIndex = 1
+    local castIndex = 1
     local targets = {
         { x = 60, y = 60 },
         { x = 740, y = 540 },
         { x = 740, y = 60 },
         { x = 60, y = 540 },
+    }
+    -- Alternate between a self-cast (damages the caster) and a far cast
+    -- (exercises the authoritative range clamp).
+    local castTargets = {
+        { kind = "self" },
+        { kind = "far", dx = 500, dy = 500 },
     }
 
     while love.timer.getTime() < deadline do
@@ -91,29 +114,61 @@ local function run()
             nextClickAt = now + 3
         end
 
+        if now >= nextCastAt then
+            local target = castTargets[castIndex]
+            if session1:isPlayer() and session1.localPlayer then
+                local lp = session1.localPlayer
+                local cx = (target.kind == "far") and (lp.x + target.dx) or lp.x
+                local cy = (target.kind == "far") and (lp.y + target.dy) or lp.y
+                if session1:localCastIntent("w", cx, cy) then
+                    castStats1.sent = castStats1.sent + 1
+                end
+            end
+            if session2:isPlayer() and session2.localPlayer then
+                local lp = session2.localPlayer
+                local cx = (target.kind == "far") and (lp.x + target.dx) or lp.x
+                local cy = (target.kind == "far") and (lp.y + target.dy) or lp.y
+                if session2:localCastIntent("w", cx, cy) then
+                    castStats2.sent = castStats2.sent + 1
+                end
+            end
+            castIndex = (castIndex % #castTargets) + 1
+            nextCastAt = now + 2.0
+        end
+
+        observe(session1, castStats1)
+        observe(session2, castStats2)
+
         adapter1:flushOutbox()
         adapter2:flushOutbox()
         love.timer.sleep(0.001)
     end
 
-    local function report(name, session, stats)
-        print(string.format("%s: slot=%s rtt=%.0fms divergence=%.1fpx snaps=%d snapshots=%d",
+    local function report(name, session, stats, cast)
+        print(string.format(
+            "%s: slot=%s rtt=%.0fms divergence=%.1fpx snaps=%d snapshots=%d casts=%d sawPool=%s tookDamage=%s hp=%.0f",
             name, tostring(session:getSlot()), (session.latency or 0) * 1000,
-            stats.maxDivergence, stats.snaps, stats.samples))
+            stats.maxDivergence, stats.snaps, stats.samples, cast.sent,
+            tostring(cast.sawPool), tostring(cast.tookDamage),
+            (session:getState().health or 100)))
     end
-    report("client1", session1, stats1)
-    report("client2", session2, stats2)
+    report("client1", session1, stats1, castStats1)
+    report("client2", session2, stats2, castStats2)
 
     adapter1:destroy()
     adapter2:destroy()
 
     local healthy = stats1.samples > 0 and stats2.samples > 0
         and stats1.snaps == 0 and stats2.snaps == 0
+        and castStats1.sent > 0 and castStats2.sent > 0
+        and castStats1.sawPool and castStats2.sawPool
+        and castStats1.tookDamage and castStats2.tookDamage
+
     if healthy then
-        print("TWO-CLIENT DIAGNOSTIC PASSED (no rubber-banding)")
+        print("TWO-CLIENT DIAGNOSTIC PASSED (no rubber-banding, both cast and took damage)")
         return true
     end
-    print("TWO-CLIENT DIAGNOSTIC FAILED (snapping detected or no snapshots received)")
+    print("TWO-CLIENT DIAGNOSTIC FAILED (snapping, missing casts/pools, or no damage observed)")
     return false
 end
 
