@@ -27,6 +27,7 @@ Beam.length = 500              -- beam length in pixels
 Beam.width = 35                -- beam width in pixels
 Beam.charge = 0.5              -- windup duration (rooted)
 Beam.linger = 0.5              -- visibility after firing
+Beam.icon = { col = 0, row = 0 } -- HUD tile in abilities_tilemap.png (top-left)
 
 function Beam.new(owner, x, y, remaining)
     local self = setmetatable({}, Beam)

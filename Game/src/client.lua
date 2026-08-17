@@ -9,6 +9,7 @@ local Game = require("src.game")
 local Session = require("src.session")
 local net = require("src.net")
 local registry = require("src.abilities.registry")
+local Sprites = require("src.sprites")
 
 local client = {}
 
@@ -42,11 +43,18 @@ function client.run(config)
 
     local aimingSlot = nil -- "q" | "w" | "e" while the ability key is held
     local keyFont, smallFont
+    local abilityAtlas
 
     local function ensureFonts()
         if not keyFont then
             keyFont = love.graphics.newFont(16)
             smallFont = love.graphics.newFont(12)
+        end
+    end
+
+    local function ensureSprites()
+        if not abilityAtlas then
+            abilityAtlas = Sprites.new("sprites/abilities_tilemap.png")
         end
     end
 
@@ -221,6 +229,7 @@ function client.run(config)
     local HUD_BOX = 56
     local HUD_GAP = 8
     local HEALTH_H = 10
+    local KEY_BACK = { 0, 0, 0, 0.6 } -- backing behind the hotkey letter
 
     local function drawHUD(state)
         local slot = session:getSlot()
@@ -259,31 +268,57 @@ function client.run(config)
             love.graphics.rectangle("fill", x, hudY, HUD_BOX, HUD_BOX)
 
             local borderColor = COLORS.hudText
-            local nameText, subText
+            local labelText
 
             if not abilityId then
                 -- empty/disabled slot
                 applyColor(COLORS.hudDisabled)
                 love.graphics.rectangle("fill", x, hudY, HUD_BOX, HUD_BOX)
-            elseif cooldown > 0 then
-                -- greyed out with a numeric countdown
-                applyColor(COLORS.hudCooldown)
-                love.graphics.rectangle("fill", x, hudY, HUD_BOX, HUD_BOX)
-                subText = string.format("%.1f", cooldown)
             else
-                -- ready
-                nameText = registry.load(abilityId).name
-                borderColor = COLORS.hudReady
+                local abilityModule = registry.load(abilityId)
+                local icon = abilityModule.icon
+
+                if icon then
+                    -- Draw the ability's tilemap icon scaled to fill the box.
+                    ensureSprites()
+                    local quad = Sprites.quad(abilityAtlas, icon.col, icon.row)
+                    love.graphics.setColor(1, 1, 1, 1)
+                    love.graphics.draw(
+                        abilityAtlas.image,
+                        quad,
+                        x, hudY,
+                        0,
+                        HUD_BOX / abilityAtlas.tile,
+                        HUD_BOX / abilityAtlas.tile
+                    )
+                end
+
+                if cooldown > 0 then
+                    -- Dim the icon while it recharges and show a countdown.
+                    applyColor(COLORS.hudCooldown, 0.72)
+                    love.graphics.rectangle("fill", x, hudY, HUD_BOX, HUD_BOX)
+                    labelText = string.format("%.1f", cooldown)
+                elseif not icon then
+                    -- No sprite yet: show the ability name when ready.
+                    labelText = abilityModule.name
+                else
+                    borderColor = COLORS.hudReady
+                end
             end
 
+            -- Hotkey label in the top-left corner, on a dark backing so it stays
+            -- legible over bright icon art.
             love.graphics.setFont(keyFont)
+            local keyLabel = string.upper(key)
+            applyColor(KEY_BACK)
+            love.graphics.rectangle("fill", x + 4, hudY + 4, keyFont:getWidth(keyLabel) + 8, keyFont:getHeight() + 4)
             applyColor(COLORS.hudText)
-            love.graphics.print(string.upper(key), x + 8, hudY + 6)
+            love.graphics.print(keyLabel, x + 8, hudY + 6)
 
-            if nameText or subText then
+            if labelText then
                 love.graphics.setFont(smallFont)
                 applyColor(COLORS.hudText)
-                love.graphics.print(nameText or subText, x + 8, hudY + HUD_BOX - 24)
+                love.graphics.print(labelText, x + 8, hudY + HUD_BOX - 24)
             end
 
             -- Live trap counter on the E hotkey (hidden at zero).
