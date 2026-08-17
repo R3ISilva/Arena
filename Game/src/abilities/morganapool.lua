@@ -19,7 +19,7 @@ Pool.cooldown = 6    -- seconds, starts on cast
 Pool.damage = 30     -- damage per second, applied as ticks
 Pool.range = 200     -- cast range in pixels (clamped at the boundary)
 Pool.radius = 60     -- effect radius in pixels
-Pool.duration = 1    -- seconds the pool persists
+Pool.duration = 2    -- seconds the pool persists
 Pool.tickInterval = 0.25
 
 function Pool.new(owner, x, y, remaining)
