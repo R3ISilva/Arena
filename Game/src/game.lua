@@ -357,8 +357,12 @@ function Game:tick(dt)
         end
     end
 
-    -- Single-use overlap triggers (traps): an armed trap stuns and is consumed by
-    -- the first non-stunned player whose circle overlaps it.
+    -- Single-use overlap triggers (traps): an armed trap stuns and begins its
+    -- despawn (snap shut + fade) on the first non-stunned player whose circle
+    -- overlaps it. The stun lands instantly at the moment of overlap; the trap
+    -- lingers while it despawns and can no longer re-trigger (its armed flag
+    -- drops when the despawn phase starts). Abilities without a trigger hook
+    -- fall back to the old instant removal.
     local newlyStunned = {}
     for _, ability in ipairs(self.abilities) do
         if ability.trigger == "overlap" and ability.armed and ability.active then
@@ -371,7 +375,11 @@ function Game:tick(dt)
                     if px * px + py * py <= reachSq then
                         self:applyStun(slot, ability.stunDuration or 0)
                         newlyStunned[slot] = true
-                        ability.active = false
+                        if ability.onTrigger then
+                            ability:onTrigger()
+                        else
+                            ability.active = false
+                        end
                         break
                     end
                 end

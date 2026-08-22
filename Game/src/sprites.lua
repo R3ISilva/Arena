@@ -7,18 +7,24 @@
 -- that don't have sprites yet. Each ability module declares its own tile via an
 -- `icon` field { col, row } so the sprite metadata stays next to the ability it
 -- belongs to.
+--
+-- Other sheets use a different tile size (e.g. the flytrap sheet is a 5x4 grid
+-- of 320px tiles); pass an explicit tile size to Sprites.new for those. The
+-- frame index is mapped to its quad by the caller via col = frame % cols,
+-- row = floor(frame / cols).
 
 local Sprites = {}
 
 local TILE = 64
 
--- Create an atlas for a tilemap image.
-function Sprites.new(path)
+-- Create an atlas for a tilemap image. `tile` defaults to the 64px ability
+-- tile; pass a custom size for sheets with other grid dimensions.
+function Sprites.new(path, tile)
     local image = love.graphics.newImage(path)
     image:setFilter("linear", "linear")
     return {
         image = image,
-        tile = TILE,
+        tile = tile or TILE,
         quads = {}, -- "col,row" -> quad cache
     }
 end

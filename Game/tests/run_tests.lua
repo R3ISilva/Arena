@@ -1154,7 +1154,24 @@ test("stun during the trap root does not refund or remove the placed trap", func
 
     assertTrue(game:isStunned("player1"))
     assertTrue(game:getCooldowns("player1").e > 0, "trap cooldown must NOT be refunded")
-    assertEqual(game:countActiveAbilities("player1", "beartrap"), 1, "the placed trap B stays down")
+
+    -- Trap A lingers while it snaps/fades; trap B is still down at the caster's
+    -- feet. Both are counted while A is despawning.
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 2, "triggered trap A lingers while despawning")
+    local trapA, trapB
+    for _, ability in ipairs(game:getAbilities()) do
+        if ability.abilityId == "beartrap" then
+            if ability.x == 150 then trapA = ability end
+            if ability.x == 25 then trapB = ability end
+        end
+    end
+    assertTrue(trapB ~= nil, "the placed trap B stays down")
+    assertEqual(trapA.phase, "despawning", "triggered trap A enters the despawn phase")
+
+    -- Once trap A's linger completes, only trap B remains.
+    for _ = 1, 20 do game:tick(1 / 30) end -- ~0.67s: A despawned, B still arming
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 1, "only trap B remains after A despawns")
+    assertTrue(game:isStunned("player1"), "the 2s stun from trap A is still in effect")
 end)
 
 test("morganastun windup roots the caster, then the projectile stuns the enemy", function()
@@ -1289,13 +1306,20 @@ test("armed trap stuns the first player to overlap it and is consumed", function
     assertEqual(game:isStunned("player1"), false, "trap should be armed but not triggered yet")
     assertEqual(game:countActiveAbilities("player1", "beartrap"), 1)
 
-    -- Step onto the armed trap: it triggers and is consumed.
+    -- Step onto the armed trap: it stuns instantly and enters the despawn
+    -- phase (snap shut + fade) instead of being removed on the spot.
     game:setPosition("player1", 150, 25)
     game:tick(1 / 30)
 
     assertTrue(game:isStunned("player1"), "armed trap should stun the overlapping player")
     assertEqual(game:getStunRemaining("player1"), 2, "stun lasts 2s")
-    assertEqual(game:countActiveAbilities("player1", "beartrap"), 0, "trap should be consumed on trigger")
+    local trap = game:getAbilities()[1]
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 1, "trap lingers while despawning")
+    assertEqual(trap.phase, "despawning", "triggered trap should enter the despawn phase")
+
+    -- The ~0.45s despawn linger completes and only then is the trap removed.
+    for _ = 1, 14 do game:tick(1 / 30) end -- ~0.47s
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 0, "trap removed after the despawn linger")
 end)
 
 test("trap cap removes the oldest trap when placing a 5th", function()
@@ -1384,8 +1408,96 @@ test("trap expires after its duration", function()
     for _ = 1, 29 * 30 do game:tick(1 / 30) end -- ~29s
     assertEqual(game:countActiveAbilities("player1", "beartrap"), 1, "trap should still be alive just under 30s")
 
-    for _ = 1, 2 * 30 do game:tick(1 / 30) end -- ~31s total
-    assertEqual(game:countActiveAbilities("player1", "beartrap"), 0, "trap should expire after 30s")
+    -- At 30s the trap enters the same despawn phase as a triggered one instead
+    -- of vanishing instantly, and stays counted active during the linger.
+    for _ = 1, 40 do game:tick(1 / 30) end -- ~30.33s total
+    local trap = game:getAbilities()[1]
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 1, "trap is counted active while despawning")
+    assertEqual(trap.phase, "despawning", "trap should enter despawning at 30s, not vanish instantly")
+
+    for _ = 1, 25 do game:tick(1 / 30) end -- ~31.17s total
+    assertEqual(game:countActiveAbilities("player1", "beartrap"), 0, "trap removed after 30s + 0.45s despawn")
+end)
+
+test("a triggered trap stuns instantly and is removed after the ~0.45s despawn", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+
+    -- Player2 arms a trap away from both spawns, then player1 steps on it.
+    game:castAbility("player2", "e", 100, 25)
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+    game:setPosition("player1", 100, 25)
+    game:tick(1 / 30) -- trigger
+
+    assertTrue(game:isStunned("player1"), "stun must land the instant of overlap")
+    assertNear(game:getStunRemaining("player1"), 2, 0.001)
+    assertEqual(game:countActiveAbilities("player2", "beartrap"), 1, "trap stays counted active during despawn")
+
+    -- ~0.4s after the trigger it is still despawning; just past 0.45s it is
+    -- removed by the engine's sweep.
+    for _ = 1, 11 do game:tick(1 / 30) end -- ~0.37s since trigger
+    assertEqual(game:countActiveAbilities("player2", "beartrap"), 1, "trap still despawning at ~0.4s")
+
+    for _ = 1, 3 do game:tick(1 / 30) end -- ~0.47s since trigger
+    assertEqual(game:countActiveAbilities("player2", "beartrap"), 0, "trap removed just after 0.45s")
+end)
+
+test("a despawning trap does not re-trigger", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+
+    -- Player2 arms a trap away from both spawns.
+    game:castAbility("player2", "e", 100, 25)
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    -- Player1 steps on it: stun lands and the trap enters its despawn.
+    game:setPosition("player1", 100, 25)
+    game:tick(1 / 30)
+    assertTrue(game:isStunned("player1"), "first overlapping player is stunned")
+
+    -- Player2 walks onto the same trap during the despawn: no second stun.
+    game:setPosition("player2", 100, 25)
+    for _ = 1, 10 do game:tick(1 / 30) end -- ~0.33s into the 0.45s despawn
+    assertEqual(game:isStunned("player2"), false, "despawning trap must not re-trigger")
+    assertTrue(game:isStunned("player1"), "first stun still in effect")
+
+    -- The trap is consumed exactly once: it finishes its linger and is gone.
+    for _ = 1, 10 do game:tick(1 / 30) end -- ~0.67s after trigger
+    assertEqual(game:countActiveAbilities("player2", "beartrap"), 0, "trap is consumed exactly once")
+end)
+
+test("snapshots carry the trap despawn state", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:castAbility("player1", "e", 100, 25)
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    game:setPosition("player1", 100, 25)
+    game:tick(1 / 30) -- trigger: despawn begins
+    local trap = game:getAbilities()[1]
+    assertEqual(trap.phase, "despawning")
+
+    -- The module's own snapshot contract round-trips the despawn state.
+    local entry = trap:getSnapshot()
+    assertEqual(entry.phase, "despawning")
+    assertEqual(entry.armed, false)
+    assertTrue(entry.despawnRemaining ~= nil and entry.despawnRemaining > 0, "snapshot carries despawnRemaining")
+
+    local clone = registry.new("beartrap", "player1", 100, 25, 0)
+    clone:applySnapshot(entry)
+    assertEqual(clone.phase, "despawning")
+    assertEqual(clone.armed, false)
+    assertNear(clone.despawnRemaining, entry.despawnRemaining, 0.0001, "despawn timer round-trips")
+
+    -- The serialized abilities list carries the same fields for the wire.
+    local list = game:getAbilitiesSnapshot()
+    assertEqual(#list, 1)
+    assertEqual(list[1].phase, "despawning")
+    assertEqual(list[1].armed, false)
+    assertNear(list[1].despawnRemaining, trap.despawnRemaining, 0.0001, "despawn fields appear in the abilities list")
 end)
 
 test("beam and trap simulation is deterministic across two sessions", function()
@@ -1396,16 +1508,36 @@ test("beam and trap simulation is deterministic across two sessions", function()
         session:drainOutbox()
         session:onMessage(1, { type = "castIntent", slot = "q", x = 200, y = 25 })
         session:onMessage(2, { type = "castIntent", slot = "e", x = 175, y = 175 })
-        for _ = 1, 40 do session:tick(1 / 30) end
-        local state = session:getState()
-        return state.players.player1.hp, state.players.player2.stunned, #state.abilities
+
+        -- Sample the full trap lifecycle: arming (10), despawn (30), removal
+        -- (100) -- the trap arms at ~0.75s, triggers under player2, and is
+        -- removed ~0.45s later. Two identical sessions must agree at every
+        -- checkpoint, including the despawn phase.
+        local samples = {}
+        local function sample()
+            local state = session:getState()
+            local trapPhase = nil
+            for _, ability in ipairs(state.abilities) do
+                if ability.ability == "beartrap" then
+                    trapPhase = ability.phase
+                end
+            end
+            return string.format("hp=%s:stun2=%s:count=%s:trapPhase=%s",
+                tostring(state.players.player1.hp), tostring(state.players.player2.stunned),
+                tostring(#state.abilities), tostring(trapPhase))
+        end
+        for i = 1, 100 do
+            session:tick(1 / 30)
+            if i == 10 or i == 30 or i == 100 then
+                table.insert(samples, sample())
+            end
+        end
+        return table.concat(samples, "|")
     end
 
-    local hp1, stun1, count1 = simulate()
-    local hp2, stun2, count2 = simulate()
-    assertEqual(hp1, hp2, "deterministic hp")
-    assertEqual(stun1, stun2, "deterministic stun")
-    assertEqual(count1, count2, "deterministic ability count")
+    local s1 = simulate()
+    local s2 = simulate()
+    assertEqual(s1, s2, "deterministic full trap lifecycle across two sessions")
 end)
 
 ----------------------------------------
@@ -1498,6 +1630,10 @@ test("server ignores cast intents from a stunned player", function()
     assertTrue(session:getState().players.player1.stunned, "player1 should be stunned")
 
     session:onMessage(1, { type = "castIntent", slot = "w", x = 100, y = 25 })
+
+    -- The triggered trap is still playing its 0.45s despawn linger; let it
+    -- finish, then confirm the stunned player's cast produced nothing.
+    for _ = 1, 20 do session:tick(1 / 30) end
     assertEqual(#session:getState().abilities, 0, "stunned player's cast intent should be ignored")
 end)
 
@@ -1626,6 +1762,46 @@ test("client predicts its trap and reconciles authoritative trap/stun", function
     assertEqual(state.abilities[1].id, 5)
     assertEqual(state.abilities[1].armed, true)
     assertTrue(state.players.player1.stunned, "local player should be stunned from the snapshot")
+end)
+
+test("client predicts a triggered trap's despawn and reconciles it", function()
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", {
+        type = "welcome",
+        slot = "player1",
+        loadout = { q = nil, w = nil, e = "beartrap" },
+    })
+    session:drainOutbox()
+
+    -- Predict a cast at the caster's feet; the trap arms and immediately
+    -- triggers under the local player (prediction, no server round-trip).
+    session:localCastIntent("e", 25, 25)
+    for _ = 1, 22 do session:tick(1 / 30) end -- ~0.73s: still arming
+    assertEqual(session:getState().abilities[1].phase, "arming")
+
+    session:tick(1 / 30) -- tick 23: arms + triggers under the caster
+    local state = session:getState()
+    assertTrue(state.players.player1.stunned, "local player should be stunned by the predicted trap")
+    assertEqual(state.abilities[1].phase, "despawning", "predicted trap should enter despawn")
+
+    -- Reconcile with an authoritative snapshot carrying the despawn state.
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 1,
+        players = {
+            { slot = "player1", x = 25, y = 25, hp = 100, cooldowns = { q = 0, w = 0, e = 5.2 }, stunned = true, stunRemaining = 1.4 },
+        },
+        abilities = {
+            { id = 3, ability = "beartrap", owner = "player1", x = 25, y = 25, remaining = 0, armed = false, armRemaining = 0, castRootRemaining = 0, phase = "despawning", despawnRemaining = 0.2, radius = 20 },
+        },
+    })
+
+    state = session:getState()
+    assertEqual(#state.abilities, 1)
+    assertEqual(state.abilities[1].phase, "despawning", "snapshot reconciliation preserves the despawn phase")
+    assertNear(state.abilities[1].despawnRemaining, 0.2, 0.0001, "snapshot reconciliation preserves the despawn timer")
+    assertTrue(state.players.player1.stunned, "snapshot stun is applied")
 end)
 
 test("client reflects a remote player's stun from snapshots", function()
