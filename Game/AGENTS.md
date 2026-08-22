@@ -13,6 +13,9 @@
 > pwsh -File run-game.ps1        # or: powershell -ExecutionPolicy Bypass -File run-game.ps1
 > ```
 > Add `-SkipServer` to only launch the client (assumes the server is already up).
+> `run-game.ps1` also accepts `-ClientCount N` (default 1), and
+> `run-2clients.ps1` is a thin wrapper that launches **two** windowed clients
+> against the pick (one per spawn point), e.g. `pwsh -File run-2clients.ps1`.
 > For manual server control, read `Game/.pi/skills/arena-server/SKILL.md`.
 
 LÖVE ships two executables at `C:/Program Files/LOVE/`:

@@ -1,25 +1,31 @@
 <#
 .SYNOPSIS
-  Runs one Arena windowed client, making sure Docker and the dedicated server
-  ("the pick") are up first.
+  Runs one or more Arena windowed clients, making sure Docker and the dedicated
+  server ("the pick") are up first.
 
 .DESCRIPTION
   1. Verifies the Docker engine is running (and offers to start Docker Desktop).
   2. Ensures the arena-server container is up, bringing it up via the skill's
      bundled docker-run.sh (the project rule: the server ALWAYS runs in Docker).
-  3. Launches one GUI client (love.exe) against it.
+  3. Launches $ClientCount windowed client(s) (love.exe) against it.
 
   Exit codes:
-    0  - client launched (write "OK" to stdout, then run-game.ps1 is still active
-         because the client window is open; Ctrl+C or closing the window ends it)
+    0  - client(s) launched (write "OK" to stdout, then run-game.ps1 is still
+         active because the client window(s) are open; Ctrl+C or closing them
+         ends it)
     1  - Docker not running / start failed
     2  - required tooling (love.exe) not found
+
+.PARAMETER ClientCount
+  How many windowed clients to launch. Defaults to 1; run-2clients.ps1 passes 2.
 
 .PARAMETER SkipServer
   Only check Docker, do not start the server (assumes it is already up).
 #>
 [CmdletBinding()]
 param(
+    [ValidateRange(1, 16)]
+    [int]$ClientCount = 1,
     [switch]$SkipServer
 )
 
@@ -57,7 +63,8 @@ function Test-DockerReady {
 }
 
 # --- Step 1: Docker engine ----------------------------------------------
-Write-Host "== Arena: run one client =="
+$ClientWord = if ($ClientCount -eq 1) { "client" } else { "clients" }
+Write-Host "== Arena: run $ClientCount $ClientWord =="
 if (-not (Test-DockerRunning)) {
     Write-Host "Docker engine is NOT running - attempting to start Docker Desktop..."
     try {
@@ -122,8 +129,10 @@ if ($SkipServer) {
     Write-Host "The pick is already up (arena-server container present)."
 }
 
-# --- Step 3: Launch one client ------------------------------------------
-Write-Host "Launching one windowed client: $LoveExe $GameDir"
-Start-Process -FilePath $LoveExe -ArgumentList "`"$GameDir`"" -WorkingDirectory $GameDir
-Write-Host "Client launched (PID above / in the opened window). Play in the window; close it to end."
+# --- Step 3: Launch the client(s) ---------------------------------------
+for ($i = 1; $i -le $ClientCount; $i++) {
+    Write-Host "Launching windowed client $i/$ClientCount : $LoveExe $GameDir"
+    Start-Process -FilePath $LoveExe -ArgumentList "`"$GameDir`"" -WorkingDirectory $GameDir
+}
+Write-Host "Launched $ClientCount client(s). Play in the windows; close them to end."
 exit 0

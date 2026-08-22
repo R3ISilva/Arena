@@ -27,6 +27,7 @@ Pool.duration = 2    -- seconds the pool persists (after the windup)
 Pool.charge = 0.5    -- windup duration (rooted)
 Pool.tickInterval = 0.25
 Pool.cancelable = true -- a stun during the windup cancels + refunds
+Pool.icon = { col = 0, row = 1 } -- HUD tile in abilities_tilemap.png (bottom-left, 4th tile)
 
 function Pool.new(owner, x, y, remaining)
     local self = setmetatable({}, Pool)

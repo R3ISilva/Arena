@@ -2,10 +2,11 @@
 -- quads for individual tiles so draw code never allocates a quad per frame.
 --
 -- The ability tilemap (sprites/abilities_tilemap.png) is a 3x2 grid of 64px
--- tiles: top-left is Beam, top-middle is Bear Trap, and the remaining four
--- tiles are reserved for abilities that don't have sprites yet. Each ability
--- module declares its own tile via an `icon` field { col, row } so the sprite
--- metadata stays next to the ability it belongs to.
+-- tiles read row-major: Beam (0,0), Bear Trap (1,0), Morgana Stun (2,0),
+-- Morgana's Pool (0,1), and the remaining two tiles are reserved for abilities
+-- that don't have sprites yet. Each ability module declares its own tile via an
+-- `icon` field { col, row } so the sprite metadata stays next to the ability it
+-- belongs to.
 
 local Sprites = {}
 
