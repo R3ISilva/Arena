@@ -924,6 +924,7 @@ test("ability registry loads beartrap with its declared properties", function()
     assertEqual(module.trigger, "overlap")
     assertEqual(module.cooldown, 6)
     assertEqual(module.range, 200)
+    assertEqual(module.radius, 10)
     assertEqual(module.armDelay, 0.75)
     assertEqual(module.duration, 30)
     assertEqual(module.stunDuration, 2)
@@ -1320,6 +1321,31 @@ test("armed trap stuns the first player to overlap it and is consumed", function
     -- The ~0.45s despawn linger completes and only then is the trap removed.
     for _ = 1, 14 do game:tick(1 / 30) end -- ~0.47s
     assertEqual(game:countActiveAbilities("player1", "beartrap"), 0, "trap removed after the despawn linger")
+end)
+
+test("armed trap triggers only inside its smaller trigger radius", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+
+    -- Player2 arms a trap at (100, 25), away from both spawns.
+    game:castAbility("player2", "e", 100, 25)
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    -- Reach = trap radius (10) + player radius (8) = 18px. A player standing
+    -- 24px from the trap center grazes the 40px sprite but stays outside the
+    -- trigger circle: no stun, and the trap stays armed.
+    game:setPosition("player1", 124, 25)
+    game:tick(1 / 30)
+    assertEqual(game:isStunned("player1"), false, "player at 24px (outside the 18px reach) must not trigger")
+    assertEqual(game:getAbilities()[1].phase, "armed", "trap stays armed")
+    assertEqual(game:countActiveAbilities("player2", "beartrap"), 1)
+
+    -- Stepping to 18px (the reach boundary) triggers instantly.
+    game:setPosition("player1", 118, 25)
+    game:tick(1 / 30)
+    assertTrue(game:isStunned("player1"), "player at the 18px reach boundary must be stunned")
+    assertEqual(game:getAbilities()[1].phase, "despawning", "trap enters despawn on trigger")
 end)
 
 test("trap cap removes the oldest trap when placing a 5th", function()
@@ -1753,7 +1779,7 @@ test("client predicts its trap and reconciles authoritative trap/stun", function
             { slot = "player1", x = 25, y = 25, hp = 100, cooldowns = { q = 0, w = 0, e = 4.0 }, stunned = true, stunRemaining = 1.5 },
         },
         abilities = {
-            { id = 5, ability = "beartrap", owner = "player1", x = 100, y = 25, remaining = 29.0, armed = true, armRemaining = 0, radius = 20 },
+            { id = 5, ability = "beartrap", owner = "player1", x = 100, y = 25, remaining = 29.0, armed = true, armRemaining = 0, radius = 10 },
         },
     })
 
@@ -1793,7 +1819,7 @@ test("client predicts a triggered trap's despawn and reconciles it", function()
             { slot = "player1", x = 25, y = 25, hp = 100, cooldowns = { q = 0, w = 0, e = 5.2 }, stunned = true, stunRemaining = 1.4 },
         },
         abilities = {
-            { id = 3, ability = "beartrap", owner = "player1", x = 25, y = 25, remaining = 0, armed = false, armRemaining = 0, castRootRemaining = 0, phase = "despawning", despawnRemaining = 0.2, radius = 20 },
+            { id = 3, ability = "beartrap", owner = "player1", x = 25, y = 25, remaining = 0, armed = false, armRemaining = 0, castRootRemaining = 0, phase = "despawning", despawnRemaining = 0.2, radius = 10 },
         },
     })
 

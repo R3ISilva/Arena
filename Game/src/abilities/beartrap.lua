@@ -37,7 +37,9 @@ Trap.trigger = "overlap"       -- single-use overlap trigger
 Trap.cooldown = 6              -- seconds, starts on cast
 Trap.damage = 0
 Trap.range = 200               -- cast range in pixels (clamped at the boundary)
-Trap.radius = 20               -- trigger radius in pixels
+Trap.radius = 10               -- trigger radius in pixels: deliberately half the 40px sprite's
+                                -- half-width (20px), so a player must visibly step onto the trap
+                                -- (their center within 18px = trap 10 + player 8) to trigger it.
 Trap.armDelay = 0.75           -- seconds until armed
 Trap.duration = 30             -- seconds an armed trap lingers
 Trap.stunDuration = 2          -- seconds of stun applied on trigger
