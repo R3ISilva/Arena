@@ -362,7 +362,8 @@ function Game:tick(dt)
     -- overlaps it. The stun lands instantly at the moment of overlap; the trap
     -- lingers while it despawns and can no longer re-trigger (its armed flag
     -- drops when the despawn phase starts). Abilities without a trigger hook
-    -- fall back to the old instant removal.
+    -- fall back to the old instant removal. The victim's position is passed to
+    -- the hook so the trap can aim at whoever it caught.
     local newlyStunned = {}
     for _, ability in ipairs(self.abilities) do
         if ability.trigger == "overlap" and ability.armed and ability.active then
@@ -376,7 +377,7 @@ function Game:tick(dt)
                         self:applyStun(slot, ability.stunDuration or 0)
                         newlyStunned[slot] = true
                         if ability.onTrigger then
-                            ability:onTrigger()
+                            ability:onTrigger(player.x, player.y)
                         else
                             ability.active = false
                         end

@@ -17,9 +17,13 @@
 -- stay bit-for-bit identical and snapshots carry the phase.
 --
 -- Rendering uses the flytrap sprite sheet (sprites/flytrap_tilemap.png, a 5x4
--- grid of 320px tiles; frames 0-13 are the animation, 14-19 are empty). The
--- atlas is created lazily inside draw() only: this module is also loaded by the
--- headless server, where the graphics module is disabled.
+-- grid of 320px tiles; frames 0-12 are the animation -- 0 closed pod, 1
+-- opening, 2..6 fully open, 7..12 closing -- and 13-19 are empty). On trigger
+-- the trap rotates so its bottom (the closed pod's tip) points at the victim
+-- (the rotation is simulation state, carried by snapshots), so the snap reads
+-- as catching them rather than closing in the air. The atlas is created lazily
+-- inside draw() only: this module is also loaded by the headless server, where
+-- the graphics module is disabled.
 --
 -- Static tuning lives here so engine code never needs to change to rebalance.
 
@@ -56,18 +60,31 @@ Trap.fadeDuration = 0.3        -- seconds: alpha dissolve while closed
 Trap.despawnDuration = 0.45    -- seconds: snap + fade total linger
 
 -- Flytrap sheet animation map (0-indexed, row-major across 5 columns of a 5x4
--- grid of 320px tiles): 13 = closed (arming start), 12..8 = opening, 7 = open
--- (last arming frame), 6 = fully open (armed/ready), 5..1 = closing,
--- 0 = fully closed (snap end). Frames 14-19 are empty and never drawn.
+-- grid of 320px tiles): 0 = closed pod (arming start), 1 = opening, 2..6 =
+-- fully open (6 = armed/ready), 7..12 = closing frames, 0 = fully closed (snap
+-- end). Frames 13-19 are empty and never drawn.
 local FLYTRAP_PATH = "sprites/flytrap_tilemap.png"
 local FLYTRAP_TILE = 320           -- sheet is a 5x4 grid of 320px tiles
 local FLYTRAP_FRAMES_PER_ROW = 5
 local FLYTRAP_DRAW_SIZE = 40       -- in-world size, matching the old placeholder circle
 local FLYTRAP_SCALE = FLYTRAP_DRAW_SIZE / FLYTRAP_TILE
-local FRAME_ARM_START = 13         -- fully closed
-local FRAME_ARM_END = 7            -- open (last arming frame)
+local FRAME_ARM_START = 0          -- fully closed pod
 local FRAME_READY = 6              -- fully open (armed)
 local FRAME_CLOSED = 0             -- fully closed (snap end)
+
+-- The snap-shut path is not a numeric lerp: the closing frames 7..12 sit
+-- between the ready frame (6) and the closed pose (0) in sheet order, so the
+-- animation walks an explicit sequence. Frames 7-12 are identical in the art;
+-- they hold the folded-jaws pose briefly before the final close.
+local SNAP_FRAMES = { 6, 7, 8, 9, 10, 11, 12, 0 }
+
+-- The closed pod's long axis is vertical, so its bottom tip sits at
+-- sprite-local DOWN. The trigger rotation subtracts this angle to make the
+-- pod's bottom point at the victim (a victim to the right of the trap tilts
+-- the pod so its tip faces them). The fully-open pose is a symmetric star, so
+-- the aim is only visibly directional in the folded/closed poses -- which is
+-- exactly what the snap + fade shows. Tunable if the art ever changes.
+local POD_BOTTOM_ANGLE = math.pi / 2
 
 local flytrapAtlas -- created on first draw; never touched by the headless server
 
@@ -90,6 +107,7 @@ function Trap.new(owner, x, y, remaining)
     self.armRemaining = Trap.armDelay
     self.despawnRemaining = 0
     self.castRootRemaining = Trap.castRoot
+    self.rotation = 0              -- aim angle set on trigger (bottom -> victim)
     self.active = true
     return self
 end
@@ -113,11 +131,18 @@ end
 
 -- Trigger hook invoked by the simulation the instant a non-stunned player
 -- first overlaps the armed trap. The stun is applied by the simulation at the
--- same moment; this hook only starts the despawn phase (snap shut + fade).
+-- same moment; this hook starts the despawn phase (snap shut + fade) and aims
+-- the trap's bottom at the victim. victimX/victimY come from the simulation,
+-- so the rotation is deterministic and snapshot-carried. Natural expiry passes
+-- no victim and leaves the default rotation.
 -- Returns true when the trap entered the despawn phase.
-function Trap:onTrigger()
+function Trap:onTrigger(victimX, victimY)
     if self.phase ~= "armed" then
         return false
+    end
+    if victimX and victimY then
+        local aim = math.atan2(victimY - self.y, victimX - self.x)
+        self.rotation = aim - POD_BOTTOM_ANGLE
     end
     self:enterDespawn()
     return true
@@ -180,6 +205,7 @@ function Trap:getSnapshot()
         armRemaining = self.armRemaining,
         castRootRemaining = self.castRootRemaining,
         despawnRemaining = self.despawnRemaining,
+        rotation = self.rotation,
     }
 end
 
@@ -193,24 +219,27 @@ function Trap:applySnapshot(entry)
     else
         self.despawnRemaining = 0
     end
+    self.rotation = entry.rotation or 0
 end
 
 -- Frame index for the current phase: a pure function of simulation timers, so
--- predicted and authoritative instances render identically. 13 -> 7 while
--- arming (closed -> open), 6 while armed (ready), 6 -> 0 while despawning
--- (snap shut), holding 0 through the fade.
+-- predicted and authoritative instances render identically. 0 -> 6 while
+-- arming (closed pod -> open), 6 while armed (ready), then the closing
+-- sequence 6 -> 7..12 -> 0 while despawning (snap shut), holding 0 through
+-- the fade.
 function Trap:getFrame()
     if self.phase == "arming" then
         local progress = clamp01(1 - self.armRemaining / Trap.armDelay)
-        return round(FRAME_ARM_START + (FRAME_ARM_END - FRAME_ARM_START) * progress)
+        return round(FRAME_ARM_START + (FRAME_READY - FRAME_ARM_START) * progress)
     elseif self.phase == "armed" then
         return FRAME_READY
     end
-    -- despawning
+    -- despawning: walk the closing sequence (6 -> 7..12 -> 0) for the snap,
+    -- then hold the closed pose through the fade.
     local elapsed = Trap.despawnDuration - self.despawnRemaining
     if elapsed < Trap.snapDuration then
-        local progress = clamp01(elapsed / Trap.snapDuration)
-        return round(FRAME_READY + (FRAME_CLOSED - FRAME_READY) * progress)
+        local pos = 1 + clamp01(elapsed / Trap.snapDuration) * (#SNAP_FRAMES - 1)
+        return SNAP_FRAMES[math.max(1, math.min(#SNAP_FRAMES, round(pos)))]
     end
     return FRAME_CLOSED
 end
@@ -230,10 +259,10 @@ function Trap:getAlpha()
 end
 
 -- Rendering: the flytrap sprite at 40x40 px (scale 0.125 from the 320px
--- tiles), centered on the trap, no rotation (the trap is symmetric / top-down).
--- Alpha is applied via the draw color. The atlas is created on first draw only;
--- the headless server never reaches this code. The old pulsing-circle
--- placeholder (and its wall-clock pulse) is removed entirely.
+-- tiles), centered on the trap, rotated by the aim angle set on trigger (0
+-- otherwise). Alpha is applied via the draw color. The atlas is created on
+-- first draw only; the headless server never reaches this code. The old
+-- pulsing-circle placeholder (and its wall-clock pulse) is removed entirely.
 function Trap:draw(colors)
     if not flytrapAtlas then
         flytrapAtlas = Sprites.new(FLYTRAP_PATH, FLYTRAP_TILE)
@@ -245,14 +274,16 @@ function Trap:draw(colors)
     local quad = Sprites.quad(flytrapAtlas, col, row)
 
     love.graphics.setColor(1, 1, 1, self:getAlpha())
+    -- Center pivot so the aim rotation turns the mouth toward the victim
+    -- without shifting the trap. ox/oy are in (unscaled) image pixels: half a
+    -- tile lands the quad's center exactly on (self.x, self.y).
     love.graphics.draw(
         flytrapAtlas.image,
         quad,
-        self.x - FLYTRAP_DRAW_SIZE / 2,
-        self.y - FLYTRAP_DRAW_SIZE / 2,
-        0,
-        FLYTRAP_SCALE,
-        FLYTRAP_SCALE
+        self.x, self.y,
+        self.rotation,
+        FLYTRAP_SCALE, FLYTRAP_SCALE,
+        FLYTRAP_TILE / 2, FLYTRAP_TILE / 2
     )
 end
 

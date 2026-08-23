@@ -1348,6 +1348,35 @@ test("armed trap triggers only inside its smaller trigger radius", function()
     assertEqual(game:getAbilities()[1].phase, "despawning", "trap enters despawn on trigger")
 end)
 
+test("trap rotates so its bottom points at the victim when triggered", function()
+    -- Victim to the RIGHT of the trap: the pod's bottom tip (sprite-local
+    -- down) must end up pointing right, i.e. rotation = atan2(dy, dx) - pi/2
+    -- = -pi/2.
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+    game:castAbility("player2", "e", 100, 25)
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
+
+    game:setPosition("player1", 118, 25)
+    game:tick(1 / 30)
+    assertTrue(game:isStunned("player1"), "victim to the right should be stunned")
+    assertNear(game:getAbilities()[1].rotation, -math.pi / 2, 0.001, "bottom points right at a victim on the right")
+
+    -- Victim BELOW the trap: the bottom already points down, so no rotation
+    -- is applied (rotation = pi/2 - pi/2 = 0).
+    local game2 = Game.new(makeConfig())
+    game2:spawnPlayer("player1")
+    game2:spawnPlayer("player2")
+    game2:castAbility("player2", "e", 100, 25)
+    for _ = 1, 30 do game2:tick(1 / 30) end -- ~1s: armed
+
+    game2:setPosition("player1", 100, 43)
+    game2:tick(1 / 30)
+    assertTrue(game2:isStunned("player1"), "victim below should be stunned")
+    assertNear(game2:getAbilities()[1].rotation, 0, 0.001, "bottom already points down at a victim below")
+end)
+
 test("trap cap removes the oldest trap when placing a 5th", function()
     local game = Game.new(makeConfig())
     game:spawnPlayer("player1")
@@ -1501,22 +1530,28 @@ test("snapshots carry the trap despawn state", function()
     game:castAbility("player1", "e", 100, 25)
     for _ = 1, 30 do game:tick(1 / 30) end -- ~1s: armed
 
-    game:setPosition("player1", 100, 25)
+    -- Victim steps on from the right of the trap: the pod's bottom tip
+    -- (sprite-local down) rotates -90 deg to face them (rotation =
+    -- atan2(dy, dx) - pi/2 = -pi/2).
+    game:setPosition("player1", 115, 25)
     game:tick(1 / 30) -- trigger: despawn begins
     local trap = game:getAbilities()[1]
     assertEqual(trap.phase, "despawning")
+    assertNear(trap.rotation, -math.pi / 2, 0.001, "trap aims its bottom at the victim")
 
     -- The module's own snapshot contract round-trips the despawn state.
     local entry = trap:getSnapshot()
     assertEqual(entry.phase, "despawning")
     assertEqual(entry.armed, false)
     assertTrue(entry.despawnRemaining ~= nil and entry.despawnRemaining > 0, "snapshot carries despawnRemaining")
+    assertNear(entry.rotation, -math.pi / 2, 0.001, "snapshot carries the aim rotation")
 
     local clone = registry.new("beartrap", "player1", 100, 25, 0)
     clone:applySnapshot(entry)
     assertEqual(clone.phase, "despawning")
     assertEqual(clone.armed, false)
     assertNear(clone.despawnRemaining, entry.despawnRemaining, 0.0001, "despawn timer round-trips")
+    assertNear(clone.rotation, -math.pi / 2, 0.001, "aim rotation round-trips through applySnapshot")
 
     -- The serialized abilities list carries the same fields for the wire.
     local list = game:getAbilitiesSnapshot()
@@ -1524,6 +1559,7 @@ test("snapshots carry the trap despawn state", function()
     assertEqual(list[1].phase, "despawning")
     assertEqual(list[1].armed, false)
     assertNear(list[1].despawnRemaining, trap.despawnRemaining, 0.0001, "despawn fields appear in the abilities list")
+    assertNear(list[1].rotation, -math.pi / 2, 0.001, "aim rotation appears in the abilities list")
 end)
 
 test("beam and trap simulation is deterministic across two sessions", function()
@@ -1538,19 +1574,21 @@ test("beam and trap simulation is deterministic across two sessions", function()
         -- Sample the full trap lifecycle: arming (10), despawn (30), removal
         -- (100) -- the trap arms at ~0.75s, triggers under player2, and is
         -- removed ~0.45s later. Two identical sessions must agree at every
-        -- checkpoint, including the despawn phase.
+        -- checkpoint, including the despawn phase and the aim rotation.
         local samples = {}
         local function sample()
             local state = session:getState()
             local trapPhase = nil
+            local trapRot = nil
             for _, ability in ipairs(state.abilities) do
                 if ability.ability == "beartrap" then
                     trapPhase = ability.phase
+                    trapRot = ability.rotation
                 end
             end
-            return string.format("hp=%s:stun2=%s:count=%s:trapPhase=%s",
+            return string.format("hp=%s:stun2=%s:count=%s:trapPhase=%s:trapRot=%s",
                 tostring(state.players.player1.hp), tostring(state.players.player2.stunned),
-                tostring(#state.abilities), tostring(trapPhase))
+                tostring(#state.abilities), tostring(trapPhase), tostring(trapRot))
         end
         for i = 1, 100 do
             session:tick(1 / 30)
@@ -1819,7 +1857,7 @@ test("client predicts a triggered trap's despawn and reconciles it", function()
             { slot = "player1", x = 25, y = 25, hp = 100, cooldowns = { q = 0, w = 0, e = 5.2 }, stunned = true, stunRemaining = 1.4 },
         },
         abilities = {
-            { id = 3, ability = "beartrap", owner = "player1", x = 25, y = 25, remaining = 0, armed = false, armRemaining = 0, castRootRemaining = 0, phase = "despawning", despawnRemaining = 0.2, radius = 10 },
+            { id = 3, ability = "beartrap", owner = "player1", x = 25, y = 25, remaining = 0, armed = false, armRemaining = 0, castRootRemaining = 0, phase = "despawning", despawnRemaining = 0.2, radius = 10, rotation = -math.pi / 2 },
         },
     })
 
@@ -1827,6 +1865,7 @@ test("client predicts a triggered trap's despawn and reconciles it", function()
     assertEqual(#state.abilities, 1)
     assertEqual(state.abilities[1].phase, "despawning", "snapshot reconciliation preserves the despawn phase")
     assertNear(state.abilities[1].despawnRemaining, 0.2, 0.0001, "snapshot reconciliation preserves the despawn timer")
+    assertNear(state.abilities[1].rotation, -math.pi / 2, 0.0001, "snapshot reconciliation preserves the aim rotation")
     assertTrue(state.players.player1.stunned, "snapshot stun is applied")
 end)
 
