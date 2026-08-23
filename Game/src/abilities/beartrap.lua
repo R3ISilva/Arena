@@ -86,6 +86,12 @@ local SNAP_FRAMES = { 6, 7, 8, 9, 10, 11, 12, 0 }
 -- exactly what the snap + fade shows. Tunable if the art ever changes.
 local POD_BOTTOM_ANGLE = math.pi / 2
 
+-- Victims approaching along the pod's axis (directly above or below the trap)
+-- need no rotation: the vertical pod is already pointing their way, and a 180
+-- deg flip on the symmetric pod is invisible. Only victims meaningfully to the
+-- side (more than this far from the vertical axis) rotate to aim at them.
+local VERTICAL_DEADZONE = math.pi / 4 -- 45 deg half-cone above and below
+
 local flytrapAtlas -- created on first draw; never touched by the headless server
 
 local function round(value)
@@ -142,7 +148,13 @@ function Trap:onTrigger(victimX, victimY)
     end
     if victimX and victimY then
         local aim = math.atan2(victimY - self.y, victimX - self.x)
-        self.rotation = aim - POD_BOTTOM_ANGLE
+        -- Angular distance from the nearest vertical (directly above or below).
+        -- Victims inside the deadzone keep rotation 0; sideways victims rotate
+        -- so the pod's bottom points at them.
+        local delta = (aim - POD_BOTTOM_ANGLE + math.pi) % (2 * math.pi) - math.pi
+        if math.min(math.abs(delta), math.pi - math.abs(delta)) > VERTICAL_DEADZONE then
+            self.rotation = delta
+        end
     end
     self:enterDespawn()
     return true

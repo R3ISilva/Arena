@@ -1375,6 +1375,20 @@ test("trap rotates so its bottom points at the victim when triggered", function(
     game2:tick(1 / 30)
     assertTrue(game2:isStunned("player1"), "victim below should be stunned")
     assertNear(game2:getAbilities()[1].rotation, 0, 0.001, "bottom already points down at a victim below")
+
+    -- Victim directly ABOVE the trap: the pod's vertical axis already points
+    -- their way, so the deadzone keeps rotation 0 (a 180 deg flip on the
+    -- symmetric pod would be pointless).
+    local game3 = Game.new(makeConfig())
+    game3:spawnPlayer("player1")
+    game3:spawnPlayer("player2")
+    game3:castAbility("player2", "e", 100, 25)
+    for _ = 1, 30 do game3:tick(1 / 30) end -- ~1s: armed
+
+    game3:setPosition("player1", 100, 7)
+    game3:tick(1 / 30)
+    assertTrue(game3:isStunned("player1"), "victim above should be stunned")
+    assertNear(game3:getAbilities()[1].rotation, 0, 0.001, "no rotation for a victim directly above")
 end)
 
 test("trap cap removes the oldest trap when placing a 5th", function()
