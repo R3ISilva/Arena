@@ -120,7 +120,25 @@ if ($SkipServer) {
         Write-Error "Server script not found: $runScript. Re-run the arena-server skill setup."
         exit 3
     }
-    & bash $runScript
+    # `bash` on Windows can resolve to WSL's relay stub, which fails with
+    # `execvpe(/bin/bash) failed: No such file or directory` when the WSL
+    # default distro has no working /bin/bash. The shell scripts are plain
+    # bash and only need `docker`/coreutils, so prefer the known-good Git bash
+    # executable (if installed) and only fall back to `bash` on PATH.
+    $bashCandidates = @(
+        "C:/Program Files/Git/bin/bash.exe",        # Git for Windows
+        "C:/Program Files/Git/usr/bin/bash.exe"
+    )
+    $Bash = $bashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $Bash) {
+        # Last resort: whatever `bash` resolves to on PATH.
+        $Bash = (Get-Command bash -ErrorAction SilentlyContinue).Source
+    }
+    if (-not $Bash) {
+        Write-Error "Could not locate bash to run docker-run.sh. Install Git for Windows or WSL bash."
+        exit 3
+    }
+    & $Bash $runScript
     if ($LASTEXITCODE -ne 0) {
         Write-Error "docker-run.sh failed to bring up the pick (exit $LASTEXITCODE)."
         exit 1
