@@ -106,15 +106,8 @@ if (-not (Test-DockerReady)) {
     Write-Host "Docker backend is ready."
 }
 
-# --- Step 2: Server (the pick) ------------------------------------------
-$ContainerUp = & docker ps --format '{{.Names}}' 2>$null | Where-Object { $_ -eq "arena-server" }
-
-if ($SkipServer) {
-    if (-not $ContainerUp) {
-        Write-Warning "--SkipServer given but no arena-server container found; the client will not be playable."
-    }
-} elseif (-not $ContainerUp) {
-    Write-Host "The pick (arena-server) is not up - starting it via the skill's docker-run.sh..."
+# --- Helper: run the skill's docker-run.sh (build + start the pick) -----
+function Invoke-ArenaServerRun {
     $runScript = Join-Path $ServerScripts "docker-run.sh"
     if (-not (Test-Path $runScript)) {
         Write-Error "Server script not found: $runScript. Re-run the arena-server skill setup."
@@ -143,8 +136,64 @@ if ($SkipServer) {
         Write-Error "docker-run.sh failed to bring up the pick (exit $LASTEXITCODE)."
         exit 1
     }
+}
+
+# The Docker image is rebuilt (and the container recreated) by docker-run.sh
+# on every invocation, so the image's creation timestamp advances with each build.
+# A source change therefore leaves at least one tracked server file newer than
+# the running image -> rebuild needed. Only the server-relevant files matter:
+# the top-level config/lua/json plus everything under src/.
+function Get-ArenaSourceCutoff {
+    $paths = @()
+    $paths += @("config.json", "main.lua", "conf.lua", "json.lua") | ForEach-Object {
+        Join-Path $GameDir $_
+    }
+    $srcDir = Join-Path $GameDir "src"
+    if (Test-Path $srcDir) {
+        $paths += Get-ChildItem -Path $srcDir -Recurse -File -Force | ForEach-Object { $_.FullName }
+    }
+    $newest = Get-Date 0
+    foreach ($p in $paths) {
+        if (Test-Path -LiteralPath $p -PathType Leaf) {
+            $t = (Get-Item -LiteralPath $p).LastWriteTime
+            if ($t -gt $newest) { $newest = $t }
+        }
+    }
+    return $newest
+}
+
+# --- Step 2: Server (the pick) ------------------------------------------
+$ContainerUp = & docker ps --format '{{.Names}}' 2>$null | Where-Object { $_ -eq "arena-server" }
+
+$needsUpdate = $false
+if ($ContainerUp) {
+    $sourceCutoff = Get-ArenaSourceCutoff
+    # WSL/Windows clocks can skew by a small amount; rebuild only when the newest
+    # source file is clearly newer than the image build (a few seconds of slack).
+    $imageCreated = Get-Date (docker inspect --format '{{.Created}}' "arena-server" 2>$null)
+    if ($imageCreated) {
+        $needsUpdate = $sourceCutoff -gt $imageCreated.AddSeconds(5)
+    } else {
+        # Couldn't read the image age; rebuild to be safe.
+        $needsUpdate = $true
+    }
+    if ($needsUpdate) {
+        Write-Host "Server source changed since the image was built - the pick needs a rebuild."
+    }
+}
+
+if ($SkipServer) {
+    if (-not $ContainerUp) {
+        Write-Warning "--SkipServer given but no arena-server container found; the client will not be playable."
+    }
+} elseif (-not $ContainerUp) {
+    Write-Host "The pick (arena-server) is not up - starting it via the skill's docker-run.sh..."
+    Invoke-ArenaServerRun
+} elseif ($needsUpdate) {
+    Write-Host "Rebuilding the pick because the server source changed since its image was built."
+    Invoke-ArenaServerRun
 } else {
-    Write-Host "The pick is already up (arena-server container present)."
+    Write-Host "The pick is already up and up to date with the current source."
 }
 
 # --- Step 3: Launch the client(s) ---------------------------------------
