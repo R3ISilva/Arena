@@ -9,7 +9,7 @@
   },
   "player": {
     "radius": 12,
-    "walkSpeed": 260,
+    "walkSpeed": 130,
     "spawnPoints": [
       { "x": 100, "y": 100 },
       { "x": 700, "y": 500 }
