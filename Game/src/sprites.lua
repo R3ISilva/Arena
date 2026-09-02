@@ -3,10 +3,10 @@
 --
 -- The ability tilemap (sprites/abilities_tilemap.png) is a 3x2 grid of 64px
 -- tiles read row-major: Beam (0,0), Bear Trap (1,0), Morgana Stun (2,0),
--- Morgana's Pool (0,1), and the remaining two tiles are reserved for abilities
--- that don't have sprites yet. Each ability module declares its own tile via an
--- `icon` field { col, row } so the sprite metadata stays next to the ability it
--- belongs to.
+-- Morgana's Pool (0,1), Missile (1,1), and the last tile (2,1) is reserved for
+-- abilities that don't have sprites yet. Each ability module declares its own
+-- tile via an `icon` field { col, row } so the sprite metadata stays next to
+-- the ability it belongs to.
 --
 -- Other sheets use a different tile size (e.g. the flytrap sheet is a 5x4 grid
 -- of 320px tiles); pass an explicit tile size to Sprites.new for those. The

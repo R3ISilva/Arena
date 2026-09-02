@@ -1,10 +1,10 @@
 -- Windowed multiplayer client. Connects to the server from config, predicts its
 -- own player + casts, interpolates the remote player, and renders the shared
--- arena (pools, beams, traps, projectiles, stuns, health bars, and the Q/W/E/R
+-- arena (pools, beams, traps, projectiles, stuns, health bars, and the Q/W/E/R/D
 -- ability HUD).
 --
--- Input: right-click moves; holding an ability key (Q/W/E/R) enters aim mode and
--- left-clicking casts the ability. Releasing the key cancels aim.
+-- Input: right-click moves; holding an ability key (Q/W/E/R/D) enters aim mode
+-- and left-clicking casts the ability. Releasing the key cancels aim.
 
 local Game = require("src.game")
 local Session = require("src.session")
@@ -52,8 +52,26 @@ function client.run(config)
     -- detect which cosmetic events were newly crossed. Ability ids never
     -- repeat, so a stale entry can only be cleaned by the per-frame sweep.
     local animState = {}
+    -- Missile fire latches: a blast must erupt exactly once. The engine's
+    -- cosmetic "impact" event is self-healing, so the same logical missile can
+    -- re-cross it under snapshot reconciliation -- a locally-predicted impact
+    -- is rewound by a stale in-flight "falling" snapshot (or renumbered to the
+    -- server's ability id), and, at the fade end, the client removes the
+    -- missile one tick before the server does, so a straggler snapshot
+    -- re-adds the dying impact for a frame. Each re-observation re-reports the
+    -- event and would double the burst. The latch is keyed by abilityId:owner
+    -- and deliberately NOT swept on disappearance -- a player can never hold
+    -- two live missiles, so it stays armed until the owner's next cast: a new
+    -- missile generation always enters the falling phase with a fresh id, which
+    -- re-arms the latch, while rewinds and dying-missile flickers keep their id
+    -- and stay suppressed.
+    local firedImpacts = {}
+    -- Last missile instance id observed in the falling phase per owner, used to
+    -- detect a new cast (new id) vs. a rewind/flicker of the current missile
+    -- (same id).
+    local lastFallingMissileId = {}
 
-    local aimingSlot = nil -- "q" | "w" | "e" | "r" while the ability key is held
+    local aimingSlot = nil -- "q" | "w" | "e" | "r" | "d" while the ability key is held
     local keyFont, smallFont
     local abilityAtlas
 
@@ -122,6 +140,26 @@ function client.run(config)
         })
     end
 
+    -- The missile's impact erupts in fire particles (the module's own tuning),
+    -- mirroring how the trap's snap spawns its dust burst.
+    local function spawnMissileFire(x, y)
+        local fire = registry.load("missile").fire
+        Particles.spawn(particles, {
+            x = x,
+            y = y,
+            count = fire.count,
+            speed = fire.speed,
+            speedVariance = fire.speedVariance,
+            angle = 0,
+            spread = math.pi * 2, -- erupt outward in all directions
+            lifetime = fire.lifetime,
+            lifetimeVariance = fire.lifetimeVariance,
+            color = fire.color,
+            size = fire.size,
+            drag = fire.drag,
+        })
+    end
+
     local function consumeAnimationEvents()
         local seen = {}
         for _, ability in ipairs(game:getAbilities()) do
@@ -135,9 +173,25 @@ function client.run(config)
                 end
                 local _, events = Anim.evaluate(anim, ability.phase, elapsed, prev and prev.lastElapsed)
                 animState[ability.id] = { phase = ability.phase, lastElapsed = elapsed }
+                -- A missile entering the falling phase with a fresh id is a new
+                -- cast from that owner: re-arm the fire latch so the new blast
+                -- can erupt (a rewind or a dying-missile flicker keeps its id
+                -- and must not re-arm).
+                if ability.abilityId == "missile" then
+                    if ability.phase == "falling" and lastFallingMissileId[ability.owner] ~= ability.id then
+                        firedImpacts["missile|" .. ability.owner] = nil
+                        lastFallingMissileId[ability.owner] = ability.id
+                    end
+                end
                 for _, event in ipairs(events) do
                     if event.name == "snap" then
                         spawnTrapDust(ability.x, ability.y)
+                    elseif event.name == "impact" then
+                        local key = ability.abilityId .. "|" .. ability.owner
+                        if not firedImpacts[key] then
+                            firedImpacts[key] = true
+                            spawnMissileFire(ability.x, ability.y)
+                        end
                     end
                 end
             end
@@ -290,7 +344,7 @@ function client.run(config)
         )
     end
 
-    -- League-style bottom-center HUD: Q/W/E/R boxes with ready/cooldown/empty
+    -- League-style bottom-center HUD: Q/W/E/R/D boxes with ready/cooldown/empty
     -- states, and the local player's health bar above them.
     local HUD_BOX = 56
     local HUD_GAP = 8
@@ -308,7 +362,7 @@ function client.run(config)
             return
         end
 
-        local totalWidth = HUD_BOX * 4 + HUD_GAP * 3
+        local totalWidth = HUD_BOX * 5 + HUD_GAP * 4
         local startX = (WINDOW_WIDTH - totalWidth) / 2
         local hudY = WINDOW_HEIGHT - HUD_BOX - 16
 
@@ -323,7 +377,7 @@ function client.run(config)
             COLORS.healthBack
         )
 
-        local keys = { "q", "w", "e", "r" }
+        local keys = { "q", "w", "e", "r", "d" }
         for i, key in ipairs(keys) do
             local x = startX + (i - 1) * (HUD_BOX + HUD_GAP)
             local abilityId = loadout[key]
@@ -514,7 +568,7 @@ function client.run(config)
     function love.keypressed(key)
         if key == "escape" then
             love.event.quit()
-        elseif key == "q" or key == "w" or key == "e" or key == "r" then
+        elseif key == "q" or key == "w" or key == "e" or key == "r" or key == "d" then
             if session:isPlayer() then
                 local state = session:getState()
                 local me = state.players[session:getSlot()]

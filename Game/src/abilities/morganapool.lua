@@ -9,6 +9,8 @@
 -- update(dt) advances the windup first, then the tick/expiry timers once active.
 -- The caster is rooted during the windup and a faint telegraph circle is drawn
 -- at the target; the pool only starts dealing damage after the windup completes.
+-- Placement requires open ground: the pool's center must not be inside an
+-- obstacle, though the circle may overlap an obstacle's edge.
 
 local Pool = {}
 Pool.__index = Pool
@@ -27,6 +29,7 @@ Pool.duration = 2    -- seconds the pool persists (after the windup)
 Pool.charge = 0.5    -- windup duration (rooted)
 Pool.tickInterval = 0.25
 Pool.cancelable = true -- a stun during the windup cancels + refunds
+Pool.blockedByObstacles = true -- placement center must not be inside an obstacle
 Pool.icon = { col = 0, row = 1 } -- HUD tile in abilities_tilemap.png (bottom-left, 4th tile)
 
 function Pool.new(owner, x, y, remaining)
