@@ -17,7 +17,7 @@ local Game = {}
 Game.__index = Game
 
 local INITIAL_HEALTH = 100
-local DEFAULT_LOADOUT = { q = "beam", w = "morganapool", e = "beartrap", r = "morganastun" }
+local DEFAULT_LOADOUT = { q = "beam", w = "morganapool", e = "beartrap", r = "morganastun", d = "missile" }
 
 local function clamp(value, lo, hi)
     return math.max(lo, math.min(hi, value))
@@ -31,8 +31,8 @@ function Game.new(config)
     self.walkSpeed = config.player.walkSpeed
     self.players = {}       -- slot -> { x, y, path, target }
     self.health = {}        -- slot -> number (display-only, floored at 0)
-    self.loadouts = {}      -- slot -> { q, w, e, r } ability ids (server-owned)
-    self.cooldowns = {}     -- slot -> { q, w, e, r } remaining seconds
+    self.loadouts = {}      -- slot -> { q, w, e, r, d } ability ids (server-owned)
+    self.cooldowns = {}     -- slot -> { q, w, e, r, d } remaining seconds
     self.stun = {}          -- slot -> remaining stun seconds
     self.abilities = {}     -- list of active ability instances
     self.nextAbilityId = 1
@@ -49,8 +49,8 @@ function Game:spawnPlayer(slot)
     local spawn = self.world.spawnPoints[spawnIndex]
     self.players[slot] = { x = spawn.x, y = spawn.y, path = {}, target = nil }
     self.health[slot] = INITIAL_HEALTH
-    self.loadouts[slot] = { q = DEFAULT_LOADOUT.q, w = DEFAULT_LOADOUT.w, e = DEFAULT_LOADOUT.e, r = DEFAULT_LOADOUT.r }
-    self.cooldowns[slot] = { q = 0, w = 0, e = 0, r = 0 }
+    self.loadouts[slot] = { q = DEFAULT_LOADOUT.q, w = DEFAULT_LOADOUT.w, e = DEFAULT_LOADOUT.e, r = DEFAULT_LOADOUT.r, d = DEFAULT_LOADOUT.d }
+    self.cooldowns[slot] = { q = 0, w = 0, e = 0, r = 0, d = 0 }
     self.stun[slot] = nil
 end
 
@@ -203,7 +203,7 @@ function Game:setLoadout(slot, loadout)
     if not loadout then
         return
     end
-    self.loadouts[slot] = { q = loadout.q, w = loadout.w, e = loadout.e, r = loadout.r }
+    self.loadouts[slot] = { q = loadout.q, w = loadout.w, e = loadout.e, r = loadout.r, d = loadout.d }
 end
 
 function Game:setCooldowns(slot, cooldowns)
@@ -215,6 +215,7 @@ function Game:setCooldowns(slot, cooldowns)
     current.w = cooldowns.w or 0
     current.e = cooldowns.e or 0
     current.r = cooldowns.r or 0
+    current.d = cooldowns.d or 0
 end
 
 ----------------------------------------
@@ -349,9 +350,25 @@ function Game:tick(dt)
 
         if ability.damageModel == "burst" and result.burst then
             local damage = ability:getBurstDamage()
-            for slot, player in pairs(self.players) do
-                if slot ~= ability.owner and self:overlapsBeam(ability, player.x, player.y) then
-                    self.health[slot] = math.max(0, self.health[slot] - damage)
+            if ability.shape == "circle" then
+                -- Circular burst (Missile): every player whose circle overlaps
+                -- the blast radius takes the full damage, including the caster
+                -- (self-damage mirrors Morgana's Pool's tick zone).
+                local reach = ability.radius + playerRadius
+                local reachSq = reach * reach
+                for slot, player in pairs(self.players) do
+                    local px = player.x - ability.x
+                    local py = player.y - ability.y
+                    if px * px + py * py <= reachSq then
+                        self.health[slot] = math.max(0, self.health[slot] - damage)
+                    end
+                end
+            else
+                -- Line burst (Beam): the owner-excluding capsule overlap.
+                for slot, player in pairs(self.players) do
+                    if slot ~= ability.owner and self:overlapsBeam(ability, player.x, player.y) then
+                        self.health[slot] = math.max(0, self.health[slot] - damage)
+                    end
                 end
             end
         end

@@ -329,6 +329,17 @@ test("default loadout and cooldowns include an r slot bound to morganastun", fun
     assertEqual(cooldowns.r, 0, "r cooldown starts at zero")
 end)
 
+test("default loadout and cooldowns include a d slot bound to missile", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local loadout = game:getLoadout("player1")
+    assertEqual(loadout.d, "missile")
+
+    local cooldowns = game:getCooldowns("player1")
+    assertEqual(cooldowns.d, 0, "d cooldown starts at zero")
+end)
+
 test("game setTarget clamps coordinates to the arena", function()
     local game = Game.new(makeConfig())
     game:spawnPlayer("player1")
@@ -639,6 +650,25 @@ test("ability registry loads morganapool with its declared properties", function
     assertEqual(module.blockedByObstacles, true)
 end)
 
+test("ability registry loads missile with its declared properties", function()
+    local module = registry.load("missile")
+    assertTrue(module ~= nil, "missile module should load")
+    assertEqual(module.name, "Missile")
+    assertEqual(module.type, "missile")
+    assertEqual(module.shape, "circle")
+    assertEqual(module.damageModel, "burst")
+    assertEqual(module.cooldown, 8)
+    assertEqual(module.damage, 60)
+    assertEqual(module.range, 300)
+    assertEqual(module.radius, 55)
+    assertEqual(module.fallDuration, 1.0)
+    assertEqual(module.fadeDuration, 0.7)
+    assertEqual(module.cancelable, false)
+    assertEqual(module.blockedByObstacles, true)
+    assertEqual(module.icon.col, 1, "missile icon tile index 4 -> col 1")
+    assertEqual(module.icon.row, 1, "missile icon tile index 4 -> row 1")
+end)
+
 ----------------------------------------
 -- Game: ability simulation (no network)
 ----------------------------------------
@@ -740,6 +770,133 @@ test("loadout resolves q, w, e, and r slots", function()
 
     local rx = game:castAbility("player1", "r", 100, 100)
     assertTrue(rx ~= nil, "r slot should resolve to morganastun")
+end)
+
+test("default loadout resolves the d slot to missile", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local dx = game:castAbility("player1", "d", 100, 25)
+    assertTrue(dx ~= nil, "d slot should resolve to missile")
+    assertEqual(#game:getAbilities(), 1)
+    assertEqual(game:getAbilities()[1].abilityId, "missile")
+    assertEqual(game:getAbilities()[1].phase, "falling")
+end)
+
+test("missile cast clamps the target to its 300px range", function()
+    local config = makeConfig()
+    config.window = { title = "test", width = 800, height = 600 }
+    config.player.spawnPoints = { { x = 100, y = 100 }, { x = 700, y = 500 } }
+    config.obstacles = {} -- open ground everywhere
+    local game = Game.new(config)
+    game:spawnPlayer("player1")
+
+    -- A click 700px away clamps to the 300px range in the clicked direction.
+    local cx, cy = game:castAbility("player1", "d", 800, 100)
+    assertTrue(cx ~= nil, "missile cast should succeed")
+    assertEqual(cx, 400, "target should clamp to 300px horizontally")
+    assertEqual(cy, 100)
+
+    -- A click inside the range is placed unclamped.
+    game:setCooldowns("player1", { q = 0, w = 0, e = 0, r = 0, d = 0 })
+    local cx2, cy2 = game:castAbility("player1", "d", 300, 100)
+    assertTrue(cx2 ~= nil, "second missile cast should succeed")
+    assertEqual(cx2, 300)
+    assertEqual(cy2, 100)
+end)
+
+test("missile cooldown starts on cast and blocks a recast for 8s", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    local cx = game:castAbility("player1", "d", 100, 25)
+    assertTrue(cx ~= nil, "first missile cast should succeed")
+    assertEqual(game:getCooldowns("player1").d, 8, "missile cooldown starts at cast")
+
+    assertEqual(game:castAbility("player1", "d", 50, 25), nil, "recast during the cooldown should be rejected")
+
+    for _ = 1, 177 do game:tick(1 / 30) end -- ~5.9s
+    assertEqual(game:castAbility("player1", "d", 50, 25), nil, "recast before the cooldown expires should be rejected")
+
+    for _ = 1, 66 do game:tick(1 / 30) end -- ~8.1s total
+    local again = game:castAbility("player1", "d", 50, 25)
+    assertTrue(again ~= nil, "cast should succeed after the cooldown expires")
+end)
+
+test("missile placement is rejected when its center is inside an obstacle", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    -- The central obstacle spans (75..125, 75..125): a rejected cast must not
+    -- spawn anything or start the cooldown.
+    assertEqual(game:castAbility("player1", "d", 100, 100), nil, "missile centered inside an obstacle should be rejected")
+    assertEqual(#game:getAbilities(), 0)
+    assertEqual(game:getCooldowns("player1").d, 0, "a rejected cast must not start the cooldown")
+
+    -- A missile whose circle overlaps the wall but whose center is outside is
+    -- allowed, matching Bear Trap's open-ground rule.
+    local cx = game:castAbility("player1", "d", 74, 100)
+    assertTrue(cx ~= nil, "missile with its center outside the obstacle should place")
+    assertEqual(#game:getAbilities(), 1)
+end)
+
+test("missile falls without damage and bursts once for 60 to everyone in range including the caster", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:spawnPlayer("player2")
+    -- A missile on the caster: player1 (25,25) sits on the blast center and
+    -- player2 (60,25) is 35px away; both are inside the 55px blast radius
+    -- (reach = radius 55 + player radius 8 = 63).
+    game:setPosition("player2", 60, 25)
+    game:castAbility("player1", "d", 25, 25)
+    assertEqual(game:getAbilities()[1].phase, "falling")
+
+    for _ = 1, 27 do game:tick(1 / 30) end -- ~0.9s, still falling
+    assertEqual(game:getHealth("player1"), 100, "no damage to the caster during the fall")
+    assertEqual(game:getHealth("player2"), 100, "no damage to the victim during the fall")
+    assertEqual(game:getAbilities()[1].phase, "falling", "missile should still be falling at 0.9s")
+
+    for _ = 1, 6 do game:tick(1 / 30) end -- ~1.1s total: the impact has landed
+    assertEqual(game:getHealth("player1"), 40, "the caster takes the full 60-damage burst")
+    assertEqual(game:getHealth("player2"), 40, "an overlapping victim takes the full 60-damage burst")
+    assertEqual(game:getAbilities()[1].phase, "impact", "missile enters the impact fade after the burst")
+
+    -- The burst fires exactly once: health stays put through the rest of the fade.
+    for _ = 1, 30 do game:tick(1 / 30) end -- ~2.1s total
+    assertEqual(game:getHealth("player1"), 40, "the burst must not repeat")
+    assertEqual(game:getHealth("player2"), 40)
+end)
+
+test("missile instance is removed after the fall + fade window", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:castAbility("player1", "d", 100, 25) -- away from the caster: nobody gets hit
+    assertEqual(#game:getAbilities(), 1)
+
+    for _ = 1, 27 do game:tick(1 / 30) end -- ~0.9s: still falling
+    assertEqual(game:getAbilities()[1].phase, "falling", "missile should still be falling at 0.9s")
+
+    for _ = 1, 6 do game:tick(1 / 30) end -- ~1.1s total: fall done, fade in progress
+    assertEqual(game:getAbilities()[1].phase, "impact", "missile should be fading out at 1.1s")
+
+    for _ = 1, 24 do game:tick(1 / 30) end -- ~1.9s total > 1.0s fall + 0.7s fade
+    assertEqual(#game:getAbilities(), 0, "missile should be removed after fall + fade")
+end)
+
+test("missile cast is instant and does not root the caster", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    game:setTarget("player1", 175, 25)
+    game:tick(1 / 30)
+    assertTrue(game:getPlayer("player1").x > 25, "player should start moving before casting")
+
+    game:castAbility("player1", "d", 25, 175) -- off the movement path
+    assertEqual(game:isRooted("player1"), false, "missile cast must not root the caster")
+    local xAtCast = game:getPlayer("player1").x
+
+    for _ = 1, 30 do game:tick(1 / 30) end -- through the whole 1.0s fall
+    assertTrue(game:getPlayer("player1").x > xAtCast, "caster should keep moving while the missile falls")
 end)
 
 ----------------------------------------
@@ -1782,6 +1939,67 @@ test("snapshots carry the r cooldown and projectile state", function()
     assertTrue(stunFound, "snapshot should carry the charging morganastun")
 end)
 
+test("server castIntent accepts the d slot and spawns an authoritative missile", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "d", x = 100, y = 25 })
+    session:tick(1 / 30)
+
+    local abilities = session:getState().abilities
+    assertEqual(#abilities, 1)
+    assertEqual(abilities[1].ability, "missile")
+    assertEqual(abilities[1].owner, "player1")
+    assertEqual(abilities[1].x, 100)
+    assertEqual(abilities[1].y, 25)
+    assertEqual(abilities[1].phase, "falling")
+end)
+
+test("snapshots carry the d cooldown and the missile's phase", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:onConnect(2)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "d", x = 100, y = 25 })
+    session:tick(1 / 30)
+
+    local snapshot
+    for _, entry in ipairs(session:drainOutbox()) do
+        if entry.message.type == "snapshot" then snapshot = entry.message end
+    end
+    assertTrue(snapshot ~= nil, "expected a snapshot")
+
+    local p1
+    for _, p in ipairs(snapshot.players) do
+        if p.slot == "player1" then p1 = p end
+    end
+    assertTrue(p1 ~= nil)
+    assertTrue(p1.cooldowns.d > 0, "d cooldown should be reflected in the snapshot")
+
+    local missileFound = false
+    for _, ability in ipairs(snapshot.abilities) do
+        if ability.ability == "missile" and ability.phase == "falling" and ability.radius == 55 then
+            missileFound = true
+        end
+    end
+    assertTrue(missileFound, "snapshot should carry the falling missile with its radius")
+end)
+
+test("invalid cast slots are ignored and d is now valid", function()
+    local session = newServerSession()
+    session:onConnect(1)
+    session:drainOutbox()
+
+    session:onMessage(1, { type = "castIntent", slot = "x", x = 100, y = 25 })
+    assertEqual(#session:getState().abilities, 0, "an unknown slot should be ignored")
+
+    session:onMessage(1, { type = "castIntent", slot = "d", x = 100, y = 25 })
+    session:tick(1 / 30)
+    assertEqual(#session:getState().abilities, 1, "the d slot should be accepted")
+end)
+
 ----------------------------------------
 -- Client: beam/trap/stun prediction and reconciliation
 ----------------------------------------
@@ -1961,6 +2179,50 @@ test("client predicts the r cast and reconciles the projectile", function()
     assertEqual(state.abilities[1].phase, "charging")
     assertNear(state.abilities[1].directionX, 1, 0.001)
     assertNear(state.cooldowns.r, 9.5, 0.001)
+end)
+
+test("client predicts the d cast and reconciles the missile", function()
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", {
+        type = "welcome",
+        slot = "player1",
+        loadout = { q = "beam", w = "morganapool", e = "beartrap", r = "morganastun", d = "missile" },
+    })
+    session:drainOutbox()
+
+    session:localCastIntent("d", 100, 25)
+
+    local outbox = session:drainOutbox()
+    assertEqual(#outbox, 1)
+    assertEqual(outbox[1].message.type, "castIntent")
+    assertEqual(outbox[1].message.slot, "d")
+
+    local state = session:getState()
+    assertEqual(#state.abilities, 1, "predicted missile should appear immediately")
+    assertEqual(state.abilities[1].ability, "missile")
+    assertEqual(state.abilities[1].phase, "falling")
+    assertTrue(state.cooldowns.d > 0, "local d cooldown should start immediately")
+
+    -- Reconcile with an authoritative snapshot carrying the impact phase and
+    -- its remaining fade timer.
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 1,
+        players = {
+            { slot = "player1", x = 25, y = 25, hp = 100, cooldowns = { q = 0, w = 0, e = 0, r = 0, d = 7.1 }, stunned = false, stunRemaining = 0 },
+        },
+        abilities = {
+            { id = 3, ability = "missile", owner = "player1", x = 100, y = 25, remaining = 0.15, phase = "impact", radius = 55 },
+        },
+    })
+
+    state = session:getState()
+    assertEqual(#state.abilities, 1)
+    assertEqual(state.abilities[1].id, 3)
+    assertEqual(state.abilities[1].phase, "impact", "snapshot reconciliation preserves the missile phase")
+    assertNear(state.abilities[1].remaining, 0.15, 0.0001, "snapshot reconciliation preserves the fade timer")
+    assertNear(state.cooldowns.d, 7.1, 0.001)
 end)
 
 ----------------------------------------
@@ -2281,6 +2543,350 @@ test("client-style event windows fire the trap snap exactly once per lifecycle",
         end
     end
     assertEqual(fired, 1, "exactly one snap event across the full lifecycle")
+end)
+
+----------------------------------------
+-- Missile: animation-spec golden values
+----------------------------------------
+-- The missile's frame/alpha accessors are pure wrappers over the animation
+-- engine (src/anim.engine) driven by the phase timers, exactly like Bear
+-- Trap's spec migration. The engine's stepped clip indexing is
+-- round(1 + t/duration*(n-1)); the golden arrays below are that formula
+-- sampled on the 30 Hz tick grid, so nothing here reaches into internals.
+
+local Missile = registry.load("missile")
+
+test("missile falling frames step 0 -> 8 across the fall duration", function()
+    -- Even 9-frame walk over the 1.0s fall (30 ticks at 30 Hz).
+    local golden = { 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8 }
+    for tick = 0, #golden - 1 do
+        local missile = registry.new("missile", "player1", 100, 25, 0)
+        missile.phase = "falling"
+        missile.remaining = Missile.fallDuration - tick / 30
+        assertEqual(missile:getFrame(), golden[tick + 1], string.format("falling frame at tick %d", tick))
+        assertEqual(missile:getAlpha(), 1, "alpha stays 1 while falling")
+    end
+end)
+
+test("missile impact frames step 9 -> 13 while alpha fades 1 -> 0", function()
+    -- Even 5-frame fire walk over the 0.7s fade (21 ticks at 30 Hz).
+    local golden = { 9, 9, 9, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 12, 12, 12, 12, 12, 13, 13, 13 }
+    for tick = 0, #golden - 1 do
+        local missile = registry.new("missile", "player1", 100, 25, 0)
+        missile.phase = "impact"
+        missile.remaining = Missile.fadeDuration - tick / 30
+        assertEqual(missile:getFrame(), golden[tick + 1], string.format("impact frame at tick %d", tick))
+        assertNear(missile:getAlpha(), 1 - (tick / 30) / Missile.fadeDuration, 1e-9,
+            string.format("impact alpha at tick %d", tick))
+    end
+end)
+
+test("missile frame and alpha accessors are deterministic across identical instances", function()
+    local function sample(phase, elapsed)
+        local missile = registry.new("missile", "player1", 100, 25, 0)
+        missile.phase = phase
+        if phase == "falling" then
+            missile.remaining = Missile.fallDuration - elapsed
+        else
+            missile.remaining = Missile.fadeDuration - elapsed
+        end
+        return missile:getFrame(), missile:getAlpha()
+    end
+    for _, phase in ipairs({ "falling", "impact" }) do
+        local elapsed = 0.3
+        local f1, a1 = sample(phase, elapsed)
+        local f2, a2 = sample(phase, elapsed)
+        assertEqual(f1, f2, phase .. " frame deterministic")
+        assertEqual(a1, a2, phase .. " alpha deterministic")
+    end
+end)
+
+test("missile impact crosses its cosmetic event at offset 0", function()
+    local function crossedAt(elapsed, prevElapsed)
+        local missile = registry.new("missile", "player1", 100, 25, 0)
+        missile.phase = "impact"
+        missile.remaining = Missile.fadeDuration - elapsed
+        return Anim.evaluate(Missile.animation, missile.phase, missile:getAnimationElapsed(), prevElapsed)
+    end
+
+    -- The first evaluation of the impact phase (no previous window) reports
+    -- the event so the client can burst the fire at the moment of impact.
+    local _, events = crossedAt(0, nil)
+    assertEqual(#events, 1)
+    assertEqual(events[1].name, "impact")
+
+    -- A window that has already moved past offset 0 reports nothing new.
+    local _, events = crossedAt(0.1, 0.05)
+    assertEqual(#events, 0)
+end)
+
+test("client-style event windows fire the missile impact exactly once per lifecycle", function()
+    -- Replays the client renderer's per-instance window tracking (keyed by
+    -- ability id + phase, last elapsed per phase) over a real simulated
+    -- missile lifecycle: cast, fall, impact, fade, remove. The fire-spawning
+    -- "impact" event must cross exactly once.
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:castAbility("player1", "d", 25, 25) -- missile on the caster
+
+    local fired = 0
+    local animState = {}
+    for _ = 1, 60 do -- 2.0s > the 1.0s fall + 0.7s fade lifecycle
+        game:tick(1 / 30)
+        for _, ability in ipairs(game:getAbilities()) do
+            if ability.animation and ability.id then
+                local elapsed = ability:getAnimationElapsed()
+                local prev = animState[ability.id]
+                if prev and prev.phase ~= ability.phase then
+                    prev = nil -- phase change restarts the timeline
+                end
+                local _, events = Anim.evaluate(ability.animation, ability.phase, elapsed, prev and prev.lastElapsed)
+                animState[ability.id] = { phase = ability.phase, lastElapsed = elapsed }
+                for _, event in ipairs(events) do
+                    if event.name == "impact" then
+                        fired = fired + 1
+                    end
+                end
+            end
+        end
+    end
+    assertEqual(fired, 1, "exactly one impact event across the full lifecycle")
+end)
+
+test("fire latches suppress the missile impact's re-fire after a snapshot rewind", function()
+    -- In networked play the client predicts the impact on its own tick while
+    -- the authoritative sim transitions a tick later (the client casts
+    -- instantly on input; the server processes the intent a pump later). A
+    -- stale in-flight "falling" snapshot can then rewind the predicted impact,
+    -- and the authoritative impact snapshot re-enters the phase -- re-reporting
+    -- the self-healing "impact" event and double-bursting the fire. The
+    -- client's per-owner fire latch (firedImpacts) must keep the particles to
+    -- a single eruption per blast.
+    local config = makeConfig()
+    local server = Session.new(Game.new(config), "server", config.server)
+    local client = Session.new(Game.new(config), "client", config.server)
+    server:onConnect(1)
+    server:onConnect(2)
+    client:onConnect("server")
+    for _, entry in ipairs(server:drainOutbox()) do
+        if entry.message.type == "welcome" and entry.to == 1 then
+            client:onMessage("server", entry.message)
+        end
+    end
+    client:drainOutbox()
+
+    -- The server's ability id counter skews ahead of the client's prediction
+    -- (player2 casts first), so the authoritative missile id differs from the
+    -- one the client predicts.
+    server:onMessage(2, { type = "castIntent", slot = "w", x = 175, y = 175 })
+
+    client:localCastIntent("d", 25, 25)
+    for _, entry in ipairs(client:drainOutbox()) do
+        if entry.message.type == "castIntent" then
+            server:onMessage(1, entry.message)
+        end
+    end
+
+    -- Replicate the client renderer's per-instance window tracking plus its
+    -- firedImpacts latch (re-armed only by a new cast: a fresh id entering the
+    -- falling phase), counting raw event crossings and effective spawns.
+    local crossings = 0
+    local spawns = 0
+    local firedImpacts = {}
+    local lastFallingMissileId = {}
+    local animState = {}
+    local function consume()
+        for _, ability in ipairs(client.game:getAbilities()) do
+            if ability.animation and ability.id then
+                local elapsed = ability:getAnimationElapsed()
+                local prev = animState[ability.id]
+                if prev and prev.phase ~= ability.phase then
+                    prev = nil -- phase change restarts the timeline
+                end
+                local _, events = Anim.evaluate(ability.animation, ability.phase, elapsed, prev and prev.lastElapsed)
+                animState[ability.id] = { phase = ability.phase, lastElapsed = elapsed }
+                -- A new missile cast (fresh id, falling) re-arms the latch.
+                if ability.abilityId == "missile" then
+                    if ability.phase == "falling" and lastFallingMissileId[ability.owner] ~= ability.id then
+                        firedImpacts["missile|" .. ability.owner] = nil
+                        lastFallingMissileId[ability.owner] = ability.id
+                    end
+                end
+                for _, event in ipairs(events) do
+                    if event.name == "impact" then
+                        crossings = crossings + 1
+                        local key = ability.abilityId .. "|" .. ability.owner
+                        if not firedImpacts[key] then
+                            firedImpacts[key] = true
+                            spawns = spawns + 1
+                        end
+                    end
+                end
+            end
+        end
+        for id in pairs(animState) do
+            local found = false
+            for _, ability in ipairs(client.game:getAbilities()) do
+                if ability.id == id then
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                animState[id] = nil
+            end
+        end
+    end
+
+    -- Lockstep both sessions so the client's prediction crosses the fall ->
+    -- impact boundary one tick before the server's own simulation.
+    for _ = 1, 29 do
+        server:tick(1 / 30)
+        for _, entry in ipairs(server:drainOutbox()) do
+            if entry.message.type == "snapshot" then
+                client:onMessage("server", entry.message)
+            end
+        end
+        client:tick(1 / 30)
+        consume()
+    end
+    client:tick(1 / 30) -- the client's predicted impact
+    consume()
+    assertEqual(crossings, 1, "the predicted impact crosses exactly once")
+    assertEqual(spawns, 1, "the predicted impact erupts exactly once")
+
+    -- Tick the server until its missile enters the impact phase, keeping the
+    -- newest falling snapshot (the stale one that rewinds the prediction) and
+    -- the first impact snapshot (the authoritative re-entry).
+    local staleFalling, authoritativeImpact
+    while not authoritativeImpact do
+        server:tick(1 / 30)
+        local snap
+        for _, entry in ipairs(server:drainOutbox()) do
+            if entry.message.type == "snapshot" then snap = entry.message end
+        end
+        for _, ability in ipairs(snap and snap.abilities or {}) do
+            if ability.ability == "missile" then
+                if ability.phase == "impact" then
+                    authoritativeImpact = snap
+                else
+                    staleFalling = snap
+                end
+            end
+        end
+    end
+
+    client:onMessage("server", staleFalling) -- rewind: back to falling
+    consume()
+    client:onMessage("server", authoritativeImpact) -- re-entry: impact again
+    consume()
+
+    assertEqual(crossings, 2, "the stale snapshot + authoritative impact re-cross the phase boundary")
+    assertEqual(spawns, 1, "the fire latch keeps a single eruption per blast")
+end)
+
+test("fire latches suppress the missile impact's re-fire when a fade-end snapshot straggles in", function()
+    -- At the end of the 0.7s fade the client's local sim removes the missile
+    -- ~1 tick before the server does (the client predicted the cast early).
+    -- The server's last snapshot can then land in a frame with no local tick,
+    -- re-adding the dying impact (remaining ~0) for a frame. The latch must
+    -- survive the missile's brief absence -- it is only re-armed by a genuinely
+    -- new cast (a fresh id entering the falling phase) -- so the re-added
+    -- missile cannot erupt the fire a second time. A later cast must still
+    -- erupt its own burst.
+    local session = newClientSession()
+    session:onConnect("server")
+    session:onMessage("server", {
+        type = "welcome",
+        slot = "player1",
+        loadout = { q = "beam", w = "morganapool", e = "beartrap", r = "morganastun", d = "missile" },
+    })
+    session:drainOutbox()
+
+    session:localCastIntent("d", 25, 25)
+    session:drainOutbox()
+
+    local crossings = 0
+    local spawns = 0
+    local firedImpacts = {}
+    local lastFallingMissileId = {}
+    local animState = {}
+    local function consume()
+        for _, ability in ipairs(session.game:getAbilities()) do
+            if ability.animation and ability.id then
+                local elapsed = ability:getAnimationElapsed()
+                local prev = animState[ability.id]
+                if prev and prev.phase ~= ability.phase then
+                    prev = nil -- phase change restarts the timeline
+                end
+                local _, events = Anim.evaluate(ability.animation, ability.phase, elapsed, prev and prev.lastElapsed)
+                animState[ability.id] = { phase = ability.phase, lastElapsed = elapsed }
+                -- A new missile cast (fresh id, falling) re-arms the latch.
+                if ability.abilityId == "missile" then
+                    if ability.phase == "falling" and lastFallingMissileId[ability.owner] ~= ability.id then
+                        firedImpacts["missile|" .. ability.owner] = nil
+                        lastFallingMissileId[ability.owner] = ability.id
+                    end
+                end
+                for _, event in ipairs(events) do
+                    if event.name == "impact" then
+                        crossings = crossings + 1
+                        local key = ability.abilityId .. "|" .. ability.owner
+                        if not firedImpacts[key] then
+                            firedImpacts[key] = true
+                            spawns = spawns + 1
+                        end
+                    end
+                end
+            end
+        end
+        for id in pairs(animState) do
+            local found = false
+            for _, ability in ipairs(session.game:getAbilities()) do
+                if ability.id == id then
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                animState[id] = nil
+            end
+        end
+    end
+
+    -- Predict the full lifecycle: fall (30 ticks) + fade (21 ticks) + margin.
+    for _ = 1, 54 do
+        session:tick(1 / 30)
+        consume()
+    end
+    assertEqual(crossings, 1, "the predicted impact crosses exactly once")
+    assertEqual(spawns, 1, "the predicted impact erupts exactly once")
+    assertEqual(#session.game:getAbilities(), 0, "the client's local sim removed the missile at fade end")
+
+    -- The server's last snapshot (sent a tick later, still listing the dying
+    -- missile) straggles in during a frame with no local tick, re-adding it.
+    session:onMessage("server", {
+        type = "snapshot",
+        seq = 1,
+        players = {},
+        abilities = {
+            { id = 3, ability = "missile", owner = "player1", x = 25, y = 25, remaining = 0.03, phase = "impact", radius = 55 },
+        },
+    })
+    consume() -- no client tick this frame: the re-added dying missile is visible
+
+    assertEqual(crossings, 2, "the fade-end straggler re-observes the impact phase")
+    assertEqual(spawns, 1, "the latch must survive the missile's brief absence")
+
+    -- A genuinely new cast (fresh id entering the falling phase) re-arms the
+    -- latch and erupts its own burst once it lands.
+    session.game:setCooldowns("player1", { q = 0, w = 0, e = 0, r = 0, d = 0 })
+    session:localCastIntent("d", 50, 25)
+    for _ = 1, 31 do
+        session:tick(1 / 30)
+        consume()
+    end
+    assertEqual(spawns, 2, "a fresh cast from the same owner erupts its own burst")
 end)
 
 ----------------------------------------
