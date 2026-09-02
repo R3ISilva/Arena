@@ -636,6 +636,7 @@ test("ability registry loads morganapool with its declared properties", function
     assertEqual(module.duration, 2)
     assertEqual(module.charge, 0.5)
     assertEqual(module.cancelable, true)
+    assertEqual(module.blockedByObstacles, true)
 end)
 
 ----------------------------------------
@@ -663,13 +664,15 @@ test("game castAbility rejects a recast during cooldown", function()
     local cx = game:castAbility("player1", "w", 200, 25)
     assertTrue(cx ~= nil, "first cast should succeed")
 
-    assertEqual(game:castAbility("player1", "w", 100, 100), nil)
+    -- All casts use open ground (200,25 lies outside the central obstacle) so
+    -- this test exercises cooldown blocking, not obstacle rejection.
+    assertEqual(game:castAbility("player1", "w", 200, 25), nil, "recast during cooldown should be rejected")
 
     for _ = 1, 177 do game:tick(1 / 30) end -- ~5.9s
-    assertEqual(game:castAbility("player1", "w", 100, 100), nil)
+    assertEqual(game:castAbility("player1", "w", 200, 25), nil, "recast before the cooldown expires should be rejected")
 
     for _ = 1, 9 do game:tick(1 / 30) end -- ~6.2s total
-    local again = game:castAbility("player1", "w", 100, 100)
+    local again = game:castAbility("player1", "w", 200, 25)
     assertTrue(again ~= nil, "cast should succeed after the cooldown expires")
 end)
 
@@ -727,10 +730,10 @@ test("loadout resolves q, w, e, and r slots", function()
     local qx = game:castAbility("player1", "q", 100, 100)
     assertTrue(qx ~= nil, "q slot should resolve to beam")
 
-    local wx, wy = game:castAbility("player1", "w", 100, 100)
+    local wx, wy = game:castAbility("player1", "w", 200, 25) -- open ground (outside the central obstacle)
     assertTrue(wx ~= nil, "w slot should resolve to morganapool")
-    assertEqual(wx, 100)
-    assertEqual(wy, 100)
+    assertEqual(wx, 200)
+    assertEqual(wy, 25)
 
     local ex = game:castAbility("player1", "e", 50, 50)
     assertTrue(ex ~= nil, "e slot should resolve to beartrap")
@@ -1285,6 +1288,20 @@ test("trap center cannot be inside an obstacle but may overlap its edge", functi
     local cx = game:castAbility("player1", "e", 74, 100)
     assertTrue(cx ~= nil, "trap with its center outside the obstacle should place")
     assertEqual(game:countActiveAbilities("player1", "beartrap"), 1)
+end)
+
+test("pool center cannot be inside an obstacle but may overlap its edge", function()
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+
+    -- The central obstacle spans (75..125, 75..125). Centered inside it, the
+    -- pool must be rejected (a rejected cast does not start the cooldown).
+    assertEqual(game:castAbility("player1", "w", 100, 100), nil, "pool centered inside an obstacle should be rejected")
+
+    -- A pool whose circle overlaps the wall but whose center is outside (74 is
+    -- just past the obstacle's 75 edge) is allowed.
+    local cx = game:castAbility("player1", "w", 74, 100)
+    assertTrue(cx ~= nil, "pool with its center outside the obstacle should place")
 end)
 
 test("trap does not trigger before its arm delay", function()
