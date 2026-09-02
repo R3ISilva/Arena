@@ -100,6 +100,8 @@ end
 
 -- Placeholder rendering: a faint target telegraph during the windup, then a
 -- translucent purple fill with a brighter outline once active.
+-- No animation spec (src.anim.engine) yet: primitive rendering only. Future
+-- sprite art should migrate this to a spec so it can animate like Bear Trap.
 function Pool:draw(colors)
     if self.phase == "charging" then
         local telegraph = colors and colors.poolTelegraph

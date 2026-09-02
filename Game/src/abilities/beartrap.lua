@@ -25,9 +25,18 @@
 -- inside draw() only: this module is also loaded by the headless server, where
 -- the graphics module is disabled.
 --
+-- Frame and alpha are produced by the pure animation engine (src/anim.engine)
+-- from this module's animation spec -- one entry per phase (arming, armed,
+-- despawning) declared as inline data beside the tuning below -- and the
+-- migration preserves the exact pre-spec output. The engine is never evaluated
+-- on the headless server; only the client renderer runs it (at draw time and
+-- to consume the spec's cosmetic "snap" event, which spawns the Trap.dust
+-- burst). Abilities without a spec keep their primitive rendering.
+--
 -- Static tuning lives here so engine code never needs to change to rebalance.
 
 local Sprites = require("src.sprites")
+local Anim = require("src.anim.engine")
 
 local Trap = {}
 Trap.__index = Trap
@@ -70,7 +79,6 @@ local FLYTRAP_DRAW_SIZE = 40       -- in-world size, matching the old placeholde
 local FLYTRAP_SCALE = FLYTRAP_DRAW_SIZE / FLYTRAP_TILE
 local FRAME_ARM_START = 0          -- fully closed pod
 local FRAME_READY = 6              -- fully open (armed)
-local FRAME_CLOSED = 0             -- fully closed (snap end)
 
 -- The snap-shut path is not a numeric lerp: the closing frames 7..12 sit
 -- between the ready frame (6) and the closed pose (0) in sheet order, so the
@@ -92,15 +100,54 @@ local POD_BOTTOM_ANGLE = math.pi / 2
 -- side (more than this far from the vertical axis) rotate to aim at them.
 local VERTICAL_DEADZONE = math.pi / 4 -- 45 deg half-cone above and below
 
+-- Animation spec: one entry per phase, declared as inline Lua data beside the
+-- tuning above and loaded through the engine's loader (src.anim.engine). The
+-- engine is a pure evaluator, so these numbers reproduce the exact frame/alpha
+-- output of the pre-migration hand-rolled math:
+--   * arming walks frames 0 -> 6 over armDelay. The engine's stepped clip
+--     indexes with round(1 + t/duration*(n-1)), which equals the old
+--     round(6 * progress) stepping, so the frames are byte-identical.
+--   * armed holds frame 6 (the ready pose) for the whole lifetime.
+--   * despawning plays the closing sequence 6 -> 7..12 -> 0 over snapDuration
+--     (the same round-based stepping as the old SNAP_FRAMES walk), then fades
+--     alpha 1 -> 0 linearly over fadeDuration, and crosses a cosmetic "snap"
+--     event at snap completion so the client can burst the dust.
+Trap.animation = Anim.load({
+    arming = {
+        type = "clip",
+        frames = { FRAME_ARM_START, 1, 2, 3, 4, 5, FRAME_READY },
+        duration = Trap.armDelay,
+    },
+    armed = {
+        type = "clip",
+        frames = { FRAME_READY },
+        duration = Trap.duration,
+    },
+    despawning = {
+        type = "timeline",
+        tracks = {
+            { type = "clip", at = 0, frames = SNAP_FRAMES, duration = Trap.snapDuration },
+            { type = "tween", at = Trap.snapDuration, property = "alpha", from = 1, to = 0, duration = Trap.fadeDuration, easing = "linear" },
+            { type = "event", at = Trap.snapDuration, name = "snap" },
+        },
+    },
+})
+
+-- Dust burst tuning for the snap cosmetic (client-local; lives beside the
+-- spec so it can be tuned without touching engine or particle code). Count,
+-- speed, color, and lifetime are all declared here.
+Trap.dust = {
+    count = 14,          -- brown flecks kicked up when the trap snaps shut
+    speed = 110,         -- base outward speed along the ground (px/s)
+    speedVariance = 70,  -- +/- per-particle speed
+    lifetime = 0.55,     -- seconds the dust lingers before fading out
+    lifetimeVariance = 0.2,
+    color = { 0.45, 0.32, 0.18 }, -- earthy brown
+    size = 2,
+    drag = 6,            -- exponential slow-down so the burst hugs the ground
+}
+
 local flytrapAtlas -- created on first draw; never touched by the headless server
-
-local function round(value)
-    return math.floor(value + 0.5)
-end
-
-local function clamp01(value)
-    return math.max(0, math.min(1, value))
-end
 
 function Trap.new(owner, x, y, remaining)
     local self = setmetatable({}, Trap)
@@ -234,40 +281,36 @@ function Trap:applySnapshot(entry)
     self.rotation = entry.rotation or 0
 end
 
--- Frame index for the current phase: a pure function of simulation timers, so
--- predicted and authoritative instances render identically. 0 -> 6 while
--- arming (closed pod -> open), 6 while armed (ready), then the closing
--- sequence 6 -> 7..12 -> 0 while despawning (snap shut), holding 0 through
--- the fade.
-function Trap:getFrame()
+-- Seconds into the current phase, derived from the ability's own simulation
+-- timers. This is the hook the animation engine (and the client renderer's
+-- event tracking) uses: given the phase and this elapsed, the pure evaluator
+-- yields the pose. `armed` needs no timer: its spec holds frame 6 regardless.
+function Trap:getAnimationElapsed()
     if self.phase == "arming" then
-        local progress = clamp01(1 - self.armRemaining / Trap.armDelay)
-        return round(FRAME_ARM_START + (FRAME_READY - FRAME_ARM_START) * progress)
-    elseif self.phase == "armed" then
-        return FRAME_READY
+        return Trap.armDelay - self.armRemaining
+    elseif self.phase == "despawning" then
+        return Trap.despawnDuration - self.despawnRemaining
     end
-    -- despawning: walk the closing sequence (6 -> 7..12 -> 0) for the snap,
-    -- then hold the closed pose through the fade.
-    local elapsed = Trap.despawnDuration - self.despawnRemaining
-    if elapsed < Trap.snapDuration then
-        local pos = 1 + clamp01(elapsed / Trap.snapDuration) * (#SNAP_FRAMES - 1)
-        return SNAP_FRAMES[math.max(1, math.min(#SNAP_FRAMES, round(pos)))]
-    end
-    return FRAME_CLOSED
+    return 0
 end
 
--- Draw alpha: 1 while arming/armed and during the snap, then a linear dissolve
--- to 0 over the fade sub-phase of the despawn. Also a pure function of sim
+-- Frame index for the current phase: a thin wrapper over the pure animation
+-- engine (Trap.animation), still a pure function of simulation timers so
+-- predicted and authoritative instances render identically. The spec's clip
+-- stepping is the pre-migration hand-rolled math, so the output is
+-- byte-identical: 0 -> 6 while arming (closed pod -> open), 6 while armed
+-- (ready), then the closing sequence 6 -> 7..12 -> 0 while despawning (snap
+-- shut), holding 0 through the fade.
+function Trap:getFrame()
+    return Anim.evaluate(Trap.animation, self.phase, self:getAnimationElapsed()).frame
+end
+
+-- Draw alpha: also a thin wrapper over the engine. 1 while arming/armed and
+-- during the snap, then a linear dissolve to 0 over the fade sub-phase of the
+-- despawn (the despawning timeline's alpha tween). Pure function of sim
 -- timers.
 function Trap:getAlpha()
-    if self.phase ~= "despawning" then
-        return 1
-    end
-    local elapsed = Trap.despawnDuration - self.despawnRemaining
-    if elapsed < Trap.snapDuration then
-        return 1
-    end
-    return clamp01(1 - (elapsed - Trap.snapDuration) / Trap.fadeDuration)
+    return Anim.evaluate(Trap.animation, self.phase, self:getAnimationElapsed()).alpha
 end
 
 -- Rendering: the flytrap sprite at 40x40 px (scale 0.125 from the 320px

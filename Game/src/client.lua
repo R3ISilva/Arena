@@ -11,6 +11,8 @@ local Session = require("src.session")
 local net = require("src.net")
 local registry = require("src.abilities.registry")
 local Sprites = require("src.sprites")
+local Particles = require("src.particles")
+local Anim = require("src.anim.engine")
 
 local client = {}
 
@@ -41,6 +43,15 @@ function client.run(config)
     local effects = {}
     local fixedDt = 1 / config.server.tickRate
     local accumulator = 0
+
+    -- Client-local particle cosmetics (e.g. the trap's dust burst). Motion is
+    -- driven by the frame dt here, never by simulation ticks, so these visuals
+    -- stay fluid without touching the deterministic sim.
+    local particles = Particles.new()
+    -- Last evaluated animation elapsed per ability instance + phase, used to
+    -- detect which cosmetic events were newly crossed. Ability ids never
+    -- repeat, so a stale entry can only be cleaned by the per-frame sweep.
+    local animState = {}
 
     local aimingSlot = nil -- "q" | "w" | "e" | "r" while the ability key is held
     local keyFont, smallFont
@@ -81,6 +92,60 @@ function client.run(config)
             effect.elapsed = effect.elapsed + dt
             if effect.elapsed >= effect.duration then
                 table.remove(effects, i)
+            end
+        end
+    end
+
+    ----------------------------------------
+    -- Animation events (client-local cosmetics)
+    ----------------------------------------
+    -- The animation engine is pure: it reports the events an ability's spec
+    -- crossed since the last evaluation, and this code decides what they
+    -- spawn. Events are cosmetic only -- under snapshot reconciliation the
+    -- worst case is a spurious or missing puff -- and particle motion runs on
+    -- wall-clock, so none of this can affect gameplay or the wire.
+    local function spawnTrapDust(x, y)
+        local dust = registry.load("beartrap").dust
+        Particles.spawn(particles, {
+            x = x,
+            y = y,
+            count = dust.count,
+            speed = dust.speed,
+            speedVariance = dust.speedVariance,
+            angle = 0,
+            spread = math.pi * 2, -- fly outward along the ground in all directions
+            lifetime = dust.lifetime,
+            lifetimeVariance = dust.lifetimeVariance,
+            color = dust.color,
+            size = dust.size,
+            drag = dust.drag,
+        })
+    end
+
+    local function consumeAnimationEvents()
+        local seen = {}
+        for _, ability in ipairs(game:getAbilities()) do
+            local anim = ability.animation
+            if anim and ability.id and ability.getAnimationElapsed then
+                seen[ability.id] = true
+                local elapsed = ability:getAnimationElapsed()
+                local prev = animState[ability.id]
+                if prev and prev.phase ~= ability.phase then
+                    prev = nil -- a new phase restarts its timeline from zero
+                end
+                local _, events = Anim.evaluate(anim, ability.phase, elapsed, prev and prev.lastElapsed)
+                animState[ability.id] = { phase = ability.phase, lastElapsed = elapsed }
+                for _, event in ipairs(events) do
+                    if event.name == "snap" then
+                        spawnTrapDust(ability.x, ability.y)
+                    end
+                end
+            end
+        end
+        -- Ability ids are never reused, but drop stale entries to stay tidy.
+        for id in pairs(animState) do
+            if not seen[id] then
+                animState[id] = nil
             end
         end
     end
@@ -359,6 +424,12 @@ function client.run(config)
         adapter:flushOutbox()
         updateEffects(dt)
 
+        -- Drive the animation engine's event consumption and the local
+        -- particles after the simulation tick so they see the latest phase
+        -- and timers. Particle motion itself is wall-clock driven (frame dt).
+        consumeAnimationEvents()
+        Particles.advance(particles, dt)
+
         -- A stun cancels a held aim mode.
         if aimingSlot and session:isPlayer() then
             local state = session:getState()
@@ -386,6 +457,9 @@ function client.run(config)
         for _, ability in ipairs(game:getAbilities()) do
             ability:draw(COLORS)
         end
+
+        -- Client-local particle cosmetics (dust bursts), drawn on the ground.
+        Particles.draw(particles)
 
         drawEffects()
 

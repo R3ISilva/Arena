@@ -5,6 +5,8 @@ local World = require("src.world")
 local Game = require("src.game")
 local Session = require("src.session")
 local registry = require("src.abilities.registry")
+local Anim = require("src.anim.engine")
+local Particles = require("src.particles")
 
 local tests = {}
 
@@ -1942,6 +1944,384 @@ test("client predicts the r cast and reconciles the projectile", function()
     assertEqual(state.abilities[1].phase, "charging")
     assertNear(state.abilities[1].directionX, 1, 0.001)
     assertNear(state.cooldowns.r, 9.5, 0.001)
+end)
+
+----------------------------------------
+-- Animation engine: pure clip/tween/timeline evaluation
+----------------------------------------
+-- These exercise the evaluator (the primary seam) headlessly: given a spec,
+-- a phase, and an elapsed time it must return the expected pose and crossed
+-- events -- and nothing else (no graphics, no wall-clock, no randomness).
+
+test("easing curves hit their endpoints with sane midpoints", function()
+    assertEqual(Anim.ease("linear", 0), 0)
+    assertEqual(Anim.ease("linear", 1), 1)
+    assertNear(Anim.ease("linear", 0.5), 0.5, 1e-9)
+    assertNear(Anim.ease("quadIn", 0.5), 0.25, 1e-9)
+    assertNear(Anim.ease("quadOut", 0.5), 0.75, 1e-9)
+    assertNear(Anim.ease("quadInOut", 0.5), 0.5, 1e-9)
+    assertNear(Anim.ease("cubicIn", 0.5), 0.125, 1e-9)
+    assertNear(Anim.ease("cubicOut", 0.5), 0.875, 1e-9)
+    assertNear(Anim.ease("sineIn", 0.5), 0.2928932188, 1e-6)
+    assertNear(Anim.ease("sineOut", 0.5), 0.7071067812, 1e-6)
+    assertEqual(Anim.ease("expoIn", 1), 1)
+    assertEqual(Anim.ease("expoOut", 0), 0)
+    -- Unknown names fall back to linear so bad data cannot crash rendering.
+    assertNear(Anim.ease("nonexistent", 0.5), 0.5, 1e-9)
+end)
+
+test("clips step through frames and hold the last frame past the end", function()
+    local spec = Anim.load({ cast = { type = "clip", frames = { 0, 1, 2, 3, 4 }, duration = 1 } })
+    assertEqual(Anim.evaluate(spec, "cast", 0).frame, 0)
+    assertEqual(Anim.evaluate(spec, "cast", 0.125).frame, 1)
+    assertEqual(Anim.evaluate(spec, "cast", 0.375).frame, 2)
+    assertEqual(Anim.evaluate(spec, "cast", 0.625).frame, 3)
+    assertEqual(Anim.evaluate(spec, "cast", 0.875).frame, 4)
+    assertEqual(Anim.evaluate(spec, "cast", 1).frame, 4)
+    assertEqual(Anim.evaluate(spec, "cast", 5).frame, 4, "clip holds its last frame past the end")
+end)
+
+test("clips loop and ping-pong", function()
+    local loop = Anim.load({ spin = { type = "clip", frames = { 0, 1, 2, 3 }, duration = 0.4, loop = true } })
+    -- t=0.5 wraps to 0.1 -> progress 0.25 -> round(1 + 0.75) = 2 -> frame 1
+    assertEqual(Anim.evaluate(loop, "spin", 0.5).frame, 1)
+    -- t=0.8 wraps to 0 -> frame 0
+    assertEqual(Anim.evaluate(loop, "spin", 0.8).frame, 0)
+
+    local bounce = Anim.load({ wobble = { type = "clip", frames = { 0, 1, 2, 3 }, duration = 0.4, pingpong = true } })
+    -- t=0.5: period 0.8, x=0.5 > 0.4 -> mirrored to 0.3 -> progress 0.75 ->
+    -- round(1 + 2.25) = 3 -> frame 2
+    assertEqual(Anim.evaluate(bounce, "wobble", 0.5).frame, 2)
+    -- t=0.2 is on the outward leg halfway to the peak -> frame 2 as well
+    assertEqual(Anim.evaluate(bounce, "wobble", 0.2).frame, 2)
+    -- t=0.8 wraps to 0 -> frame 0
+    assertEqual(Anim.evaluate(bounce, "wobble", 0.8).frame, 0)
+end)
+
+test("clips support per-frame timings", function()
+    -- Timings are binary-exact here (0.125/0.25/0.125) so boundary assertions
+    -- are stable: frame k spans [cum(k-1), cum(k)), and the boundary time
+    -- steps to the next frame.
+    local spec = Anim.load({ steps = { type = "clip", frames = { 10, 20, 30 }, timings = { 0.125, 0.25, 0.125 } } })
+    assertEqual(Anim.evaluate(spec, "steps", 0).frame, 10)
+    assertEqual(Anim.evaluate(spec, "steps", 0.1).frame, 10)
+    assertEqual(Anim.evaluate(spec, "steps", 0.125).frame, 20, "boundary time steps to the next frame")
+    assertEqual(Anim.evaluate(spec, "steps", 0.3).frame, 20)
+    assertEqual(Anim.evaluate(spec, "steps", 0.375).frame, 30)
+    assertEqual(Anim.evaluate(spec, "steps", 0.5).frame, 30)
+    assertEqual(Anim.evaluate(spec, "steps", 0.9).frame, 30, "holds the last frame past the total")
+end)
+
+test("tweens interpolate with easing and hold the end value", function()
+    local spec = Anim.load({ fade = { type = "tween", property = "alpha", from = 1, to = 0, duration = 1, easing = "linear" } })
+    assertNear(Anim.evaluate(spec, "fade", 0).alpha, 1, 1e-9)
+    assertNear(Anim.evaluate(spec, "fade", 0.5).alpha, 0.5, 1e-9)
+    assertNear(Anim.evaluate(spec, "fade", 1).alpha, 0, 1e-9)
+    assertNear(Anim.evaluate(spec, "fade", 3).alpha, 0, 1e-9, "tween holds its end value past the duration")
+
+    -- A tween can target rotation/scale/frame too.
+    local grow = Anim.load({ pop = { type = "tween", property = "scale", from = 0.5, to = 2, duration = 1, easing = "quadOut" } })
+    assertNear(Anim.evaluate(grow, "pop", 0.5).scale, 0.5 + 1.5 * 0.75, 1e-9)
+end)
+
+test("timelines compose clips and tweens in parallel and sequence", function()
+    local spec = Anim.load({
+        cast = {
+            type = "timeline",
+            tracks = {
+                { type = "clip", at = 0, frames = { 0, 1, 2 }, duration = 0.2 },
+                { type = "tween", at = 0.1, property = "alpha", from = 1, to = 0, duration = 0.1, easing = "linear" },
+                { type = "tween", at = 0.1, property = "scale", from = 1, to = 1.5, duration = 0.1, easing = "linear" },
+            },
+        },
+    })
+    -- At 0.15 the clip is 75% through (frame 2) and both tweens are halfway.
+    local pose = Anim.evaluate(spec, "cast", 0.15)
+    assertEqual(pose.frame, 2)
+    assertNear(pose.alpha, 0.5, 1e-9)
+    assertNear(pose.scale, 1.25, 1e-9)
+    -- Before the tween tracks start, the pose defaults apply (clip is still on
+    -- frame 0 at 20% progress: round(1 + 0.2*2) = 1).
+    local early = Anim.evaluate(spec, "cast", 0.04)
+    assertEqual(early.frame, 0)
+    assertEqual(early.alpha, 1)
+    assertEqual(early.scale, 1)
+end)
+
+test("timelines report events crossed in the (prev, elapsed] window", function()
+    local spec = Anim.load({
+        cast = {
+            type = "timeline",
+            tracks = {
+                { type = "event", at = 0.5, name = "pop" },
+                { type = "event", at = 1.0, name = "bang" },
+            },
+        },
+    })
+    local _, events = Anim.evaluate(spec, "cast", 0.25, nil)
+    assertEqual(#events, 0, "no events before the first timestamp")
+
+    local _, events = Anim.evaluate(spec, "cast", 0.75, 0.25)
+    assertEqual(#events, 1)
+    assertEqual(events[1].name, "pop")
+
+    local _, events = Anim.evaluate(spec, "cast", 1.25, 0.75)
+    assertEqual(#events, 1)
+    assertEqual(events[1].name, "bang")
+
+    local _, events = Anim.evaluate(spec, "cast", 1.5, 1.25)
+    assertEqual(#events, 0, "no re-report after the window passes")
+
+    -- A rewound elapsed window (snapshot rollback) reports nothing.
+    local _, events = Anim.evaluate(spec, "cast", 0.4, 0.75)
+    assertEqual(#events, 0, "a rollback window reports nothing")
+end)
+
+test("evaluate returns a default pose for unknown phases", function()
+    local spec = Anim.load({ armed = { type = "clip", frames = { 6 }, duration = 30 } })
+    local pose, events = Anim.evaluate(spec, "nonexistent", 1)
+    assertEqual(pose.frame, nil)
+    assertEqual(pose.rotation, 0)
+    assertEqual(pose.scale, 1)
+    assertEqual(pose.alpha, 1)
+    assertEqual(#events, 0)
+end)
+
+test("engine evaluation is deterministic", function()
+    local spec = Anim.load({
+        cast = {
+            type = "timeline",
+            tracks = {
+                { type = "clip", at = 0, frames = { 0, 1, 2, 3 }, duration = 0.4 },
+                { type = "tween", at = 0.2, property = "alpha", from = 1, to = 0, duration = 0.3, easing = "sineOut" },
+                { type = "event", at = 0.5, name = "snap" },
+            },
+        },
+    })
+    local function sample()
+        local pose, events = Anim.evaluate(spec, "cast", 0.53, 0.2)
+        local crossed = {}
+        for _, e in ipairs(events) do
+            table.insert(crossed, e.name)
+        end
+        return pose.frame, pose.rotation, pose.scale, pose.alpha, table.concat(crossed, ",")
+    end
+    local f1, r1, s1, a1, e1 = sample()
+    local f2, r2, s2, a2, e2 = sample()
+    assertEqual(f1, f2, "deterministic frame")
+    assertEqual(r1, r2, "deterministic rotation")
+    assertEqual(s1, s2, "deterministic scale")
+    assertEqual(a1, a2, "deterministic alpha")
+    assertEqual(e1, e2, "deterministic events")
+end)
+
+test("anim.load normalizes specs (default easing, timings total)", function()
+    local spec = Anim.load({
+        a = { type = "tween", property = "alpha", from = 1, to = 0, duration = 1 },
+        b = { type = "clip", frames = { 0, 1 }, timings = { 0.25, 0.25 } },
+        c = { type = "timeline", tracks = {
+            { type = "tween", at = 0, property = "alpha", from = 1, to = 0, duration = 1 },
+        } },
+    })
+    assertEqual(spec.a.easing, "linear", "tweens default to linear easing")
+    assertNear(spec.b.duration, 0.5, 1e-9, "timings total becomes the clip duration")
+    assertEqual(spec.c.tracks[1].easing, "linear", "timeline tracks normalize too")
+end)
+
+----------------------------------------
+-- Bear Trap: animation-spec migration golden values
+----------------------------------------
+-- The pre-migration getFrame/getAlpha math is reproduced byte-for-byte by the
+-- engine from Trap.animation. The frame sequences below are hardcoded golden
+-- values sampled at the 30 Hz tick grid; alpha is asserted against the old
+-- formula (clamp01(1 - (elapsed - snap)/fade)) so the migration is provably
+-- safe. Nothing here reaches into the engine's internals.
+
+local Trap = registry.load("beartrap")
+
+test("beartrap arming frames match the pre-migration golden stepping", function()
+    -- Old math: frame = round(6 * progress), progress = 1 - armRemaining/armDelay.
+    -- At 30 Hz that is round(8 * tick/30), sampled per tick below.
+    local golden = { 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 5, 5, 5, 5, 6, 6 }
+    for tick = 0, #golden - 1 do
+        local trap = registry.new("beartrap", "player1", 100, 25, 0)
+        trap.phase = "arming"
+        trap.armRemaining = Trap.armDelay - tick / 30
+        assertEqual(trap:getFrame(), golden[tick + 1], string.format("arming frame at tick %d", tick))
+        assertEqual(trap:getAlpha(), 1, "alpha stays 1 while arming")
+    end
+end)
+
+test("beartrap armed phase holds frame 6 with alpha 1", function()
+    local trap = registry.new("beartrap", "player1", 100, 25, 0)
+    trap.phase = "armed"
+    trap.remaining = 20 -- arbitrarily mid-life; the pose must not change
+    assertEqual(trap:getFrame(), 6)
+    assertEqual(trap:getAlpha(), 1)
+    -- The engine pose carries rotation/scale defaults for future tweens.
+    local pose = Anim.evaluate(Trap.animation, "armed", trap:getAnimationElapsed())
+    assertEqual(pose.rotation, 0)
+    assertEqual(pose.scale, 1)
+end)
+
+test("beartrap despawn snap frames match the pre-migration golden values", function()
+    -- Old math: pos = 1 + clamp01(elapsed/snapDuration)*7, index = round(pos)
+    -- into SNAP_FRAMES while elapsed < snapDuration, then hold the closed pose.
+    local golden = { 6, 8, 9, 11, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+    for tick = 0, #golden - 1 do
+        local trap = registry.new("beartrap", "player1", 100, 25, 0)
+        trap.phase = "despawning"
+        trap.despawnRemaining = Trap.despawnDuration - tick / 30
+        assertEqual(trap:getFrame(), golden[tick + 1], string.format("despawn frame at tick %d", tick))
+    end
+end)
+
+test("beartrap despawn alpha fades exactly like the old dissolve", function()
+    -- Old alpha: 1 during the snap, then clamp01(1 - (elapsed-snap)/fade). The
+    -- engine's alpha tween (started at snap completion) must reproduce it.
+    for tick = 0, 14 do
+        local elapsed = tick / 30
+        local expected
+        if elapsed < Trap.snapDuration then
+            expected = 1
+        else
+            expected = math.max(0, math.min(1, 1 - (elapsed - Trap.snapDuration) / Trap.fadeDuration))
+        end
+        local trap = registry.new("beartrap", "player1", 100, 25, 0)
+        trap.phase = "despawning"
+        trap.despawnRemaining = Trap.despawnDuration - elapsed
+        assertNear(trap:getAlpha(), expected, 1e-9, string.format("despawn alpha at tick %d", tick))
+    end
+end)
+
+test("beartrap frame and alpha accessors are deterministic across identical instances", function()
+    local function sample(phase, elapsed)
+        local trap = registry.new("beartrap", "player1", 100, 25, 0)
+        trap.phase = phase
+        if phase == "arming" then
+            trap.armRemaining = Trap.armDelay - elapsed
+        elseif phase == "despawning" then
+            trap.despawnRemaining = Trap.despawnDuration - elapsed
+        end
+        return trap:getFrame(), trap:getAlpha()
+    end
+    for _, phase in ipairs({ "arming", "armed", "despawning" }) do
+        local elapsed = (phase == "despawning") and 0.3 or 0.4
+        local f1, a1 = sample(phase, elapsed)
+        local f2, a2 = sample(phase, elapsed)
+        assertEqual(f1, f2, phase .. " frame deterministic")
+        assertEqual(a1, a2, phase .. " alpha deterministic")
+    end
+end)
+
+test("beartrap despawn crosses its snap event at snap completion", function()
+    local function crossedAt(elapsed, prevElapsed)
+        local trap = registry.new("beartrap", "player1", 100, 25, 0)
+        trap.phase = "despawning"
+        trap.despawnRemaining = Trap.despawnDuration - elapsed
+        return Anim.evaluate(Trap.animation, trap.phase, trap:getAnimationElapsed(), prevElapsed)
+    end
+
+    local _, events = crossedAt(0.1, nil) -- mid-snap: no event yet
+    assertEqual(#events, 0)
+
+    local _, events = crossedAt(0.2, 0.1) -- just past snap completion: event
+    assertEqual(#events, 1)
+    assertEqual(events[1].name, "snap")
+
+    local _, events = crossedAt(0.3, 0.2) -- window moved past it: no re-report
+    assertEqual(#events, 0)
+end)
+
+test("client-style event windows fire the trap snap exactly once per lifecycle", function()
+    -- Replays the client renderer's per-instance window tracking (keyed by
+    -- ability id + phase, last elapsed per phase) over a real simulated trap
+    -- lifecycle: cast under the caster, arm, trigger, snap, fade, remove. The
+    -- dust-spawning "snap" event must cross exactly once.
+    local game = Game.new(makeConfig())
+    game:spawnPlayer("player1")
+    game:castAbility("player1", "e", 25, 25) -- trap under the caster
+
+    local fired = 0
+    local animState = {}
+    for _ = 1, 40 do
+        game:tick(1 / 30)
+        for _, ability in ipairs(game:getAbilities()) do
+            if ability.animation and ability.id then
+                local elapsed = ability:getAnimationElapsed()
+                local prev = animState[ability.id]
+                if prev and prev.phase ~= ability.phase then
+                    prev = nil -- phase change restarts the timeline
+                end
+                local _, events = Anim.evaluate(ability.animation, ability.phase, elapsed, prev and prev.lastElapsed)
+                animState[ability.id] = { phase = ability.phase, lastElapsed = elapsed }
+                for _, event in ipairs(events) do
+                    if event.name == "snap" then
+                        fired = fired + 1
+                    end
+                end
+            end
+        end
+    end
+    assertEqual(fired, 1, "exactly one snap event across the full lifecycle")
+end)
+
+----------------------------------------
+-- Particle emitter: pure advance step
+----------------------------------------
+-- Particles.spawn is the only random/graphics-free-but-random spot and is
+-- client-local; the advance step is the deterministic seam under test.
+
+test("particles advance integrates velocity and ticks lifetime", function()
+    local list = {
+        { x = 0, y = 0, vx = 20, vy = 10, life = 1, maxLife = 1, drag = 0 },
+    }
+    Particles.advance(list, 0.5)
+    assertNear(list[1].x, 10, 1e-9)
+    assertNear(list[1].y, 5, 1e-9)
+    assertNear(list[1].life, 0.5, 1e-9)
+end)
+
+test("particles expire when their life reaches zero", function()
+    -- 0.125/0.25 are binary-exact, so the boundary assertion is stable.
+    local list = {
+        { x = 0, y = 0, vx = 0, vy = 0, life = 0.25, maxLife = 1, drag = 0 },
+    }
+    Particles.advance(list, 0.125)
+    assertEqual(#list, 1, "still alive mid-life")
+    Particles.advance(list, 0.125)
+    assertEqual(#list, 0, "removed exactly at end of life")
+end)
+
+test("particle drag damps velocity before integrating", function()
+    local list = {
+        { x = 0, y = 0, vx = 100, vy = 0, life = 1, maxLife = 1, drag = 2 },
+    }
+    Particles.advance(list, 0.25)
+    -- damp = max(0, 1 - 2*0.25) = 0.5 -> vx 50 -> x += 50*0.25 = 12.5
+    assertNear(list[1].vx, 50, 1e-9)
+    assertNear(list[1].x, 12.5, 1e-9)
+    -- Drag never reverses a particle: a full half-second damps velocity to 0.
+    Particles.advance(list, 0.5)
+    assertEqual(list[1].vx, 0)
+end)
+
+test("particle advance is deterministic", function()
+    local function run()
+        local list = {
+            { x = 1, y = 2, vx = 30, vy = -20, life = 0.7, maxLife = 1, drag = 1.5 },
+            { x = 5, y = 5, vx = -5, vy = 8, life = 0.4, maxLife = 0.4, drag = 0 },
+        }
+        for _ = 1, 10 do
+            Particles.advance(list, 1 / 60)
+        end
+        local parts = {}
+        for _, p in ipairs(list) do
+            table.insert(parts, string.format("%.6f,%.6f,%.6f", p.x, p.y, p.life))
+        end
+        return table.concat(parts, "|")
+    end
+    assertEqual(run(), run())
 end)
 
 ----------------------------------------

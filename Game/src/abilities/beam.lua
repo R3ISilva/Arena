@@ -121,6 +121,8 @@ end
 
 -- Rendering: a faint telegraph line during the windup, then the fired beam as a
 -- translucent rectangle during the linger.
+-- No animation spec (src.anim.engine) yet: primitive rendering only. Future
+-- sprite art should migrate this to a spec so it can animate like Bear Trap.
 function Beam:draw(colors)
     local ox, oy = self.x, self.y
     local dx, dy = self.directionX, self.directionY

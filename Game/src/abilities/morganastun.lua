@@ -108,6 +108,8 @@ end
 
 -- Rendering: nothing during the windup (no direction telegraph); only the
 -- projectile itself is drawn as a dark-purple orb while in flight.
+-- No animation spec (src.anim.engine) yet: primitive rendering only. Future
+-- sprite art should migrate this to a spec so it can animate like Bear Trap.
 function Stun:draw(colors)
     if self.phase ~= "flying" then
         return

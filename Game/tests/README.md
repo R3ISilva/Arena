@@ -20,20 +20,26 @@ Exit codes: `0` = pass, `1` = fail.
 
 ## 1. `--test` — headless session suite (**run_tests.lua**)
 
-The main automated suite: 63 unit/integration tests over the transport-agnostic
-`session` module — no network needed. Covers slot assignment, spawn points,
-server movement authority, snapshot emission/sequencing, disconnect recovery,
-client prediction/validation, reconciliation vs RTT, remote interpolation,
-spectator behavior, and the server-authoritative ability system (registry,
-cast clamp-to-range, cooldown enforcement, pool lifecycle/damage ticks, health
-floor, loadout resolution, cast intent handling, and client prediction of casts),
-plus the new Beam (direction/windup/burst), Bear Trap (arming/trigger/cap), and
-stun status effect (movement/cast lockdown, beam refund, snapshot sync).
+The main automated suite: 106 unit/integration tests over the transport-agnostic
+`session` module and the pure, deterministic seams — no network, graphics, or
+window needed. Covers slot assignment, spawn points, server movement authority,
+snapshot emission/sequencing, disconnect recovery, client prediction/validation,
+reconciliation vs RTT, remote interpolation, spectator behavior, and the
+server-authoritative ability system (registry, cast clamp-to-range, cooldown
+enforcement, pool lifecycle/damage ticks, health floor, loadout resolution,
+cast intent handling, and client prediction of casts), plus Beam
+(direction/windup/burst), Bear Trap (arming/trigger/cap/despawn), the stun
+status effect (movement/cast lockdown, beam refund, snapshot sync) — and the
+animation-system work: the pure animation engine (clip/tween/timeline
+evaluation, documented easing curves, event crossing, spec loader), the Bear
+Trap animation-spec migration (golden frame/alpha values across arming/armed/
+despawning plus the "snap" cosmetic event, determinism across identical
+instances), and the particle emitter's pure advance step.
 
 ```bash
 "C:/Program Files/LOVE/lovec.exe" . --test
 ```
-Bar: `63 passed, 0 failed` / `ALL TESTS PASSED`, exit 0.
+Bar: `106 passed, 0 failed` / `ALL TESTS PASSED`, exit 0.
 
 ## 2. `--probe` — live connectivity probe (**probe.lua**)
 
